@@ -7,6 +7,32 @@ NOTE: This tool (and much of this documentation) was written by AI. The AI was
 running on Gregor Richards's home system. His energy supply is mostly clean:
 hydro and nuclear.
 
+## Use case
+
+In order to add your own paper to NeoLAB's tools, you need to pay them a
+substantial sum and upload it to their system. Presumably the intended use case
+for this is manufacturers of notebooks and such, for whom such an arrangement
+makes sense. But, another use for custom paper also makes sense with the Neo
+Smartpen: annotating existing documents. For instance, writing grammar and
+spelling notes. It would be nonsensical to upload every document you want to
+annotate and even more nonsensical to pay the fee for this use.
+
+To that end, I've extracted the Ncode patterns from several of NeoLAB's freely
+available templates, and this tool can be used to overlay them on your own
+documents. Thus, you may take, for example, the letter-sized lined template
+sheet, but actually write on your own document instead of lined paper. This
+tool can both put the Ncode on your own document and take the scribbles that
+your smartpen creates and put them back on the original document.
+
+The original document never travels to NeoLAB. You can only use one document
+with one template at a time, since the smartpen has no other way of
+distinguishing them. For example, if you're working on form A and form B at the
+same time, the system won't work if you apply the letter-sized lined template
+to both forms, since it'll combine the scribbling on both. Either do form A
+first, download it, delete it from the smartpen's system, then do form B, or
+use different templates. There are about a dozen templates available, so it's
+usually easy enough to keep things separated.
+
 ## Features
 
 1. **Ncode Overlay**: Overlay Ncode pattern PNGs on PDFs
