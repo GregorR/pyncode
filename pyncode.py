@@ -385,6 +385,8 @@ def overlay_scribbles_simple(
         page_count = min(bg_page_count, scribble_page_count)
         target_pages = list(range(page_count))
     
+    page_count = len(target_pages)  # Total pages to process
+    
     if len(target_pages) == 0:
         raise ValueError("No pages to process")
     
@@ -541,7 +543,9 @@ def overlay_scribbles_with_color(
         page_count = min(bg_page_count, scribble_page_count)
         target_pages = list(range(page_count))
     
-    if len(target_pages) == 0:
+    page_count = len(target_pages)  # Total pages to process
+    
+    if page_count == 0:
         bg_doc.close()
         scribble_doc.close()
         raise ValueError("No pages to process")
