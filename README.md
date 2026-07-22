@@ -95,6 +95,10 @@ pyncode scribble document.pdf my_scribbles.pdf output.pdf --pages "1,3-5,7-10"
 # If scribble PDF has pages starting from page 48 to the end:
 pyncode scribble document.pdf my_scribbles.pdf output.pdf --pages "48-"
 
+# Export ALL pages from background (including pages without scribbles)
+# Default is to only export pages with scribbles (trimmed output)
+pyncode scribble document.pdf my_scribbles.pdf output.pdf --all-pages
+
 # Options
 pyncode scribble --help
 ```
@@ -104,11 +108,14 @@ pyncode scribble --help
 ### 3. Simple Scribble Overlay (faster, no color transformation)
 
 ```bash
-# Default mapping
+# Default: only pages with scribbles
 pyncode scribble-simple document.pdf my_scribbles.pdf output.pdf
 
 # With page mapping
 pyncode scribble-simple document.pdf my_scribbles.pdf output.pdf --pages "1,3-5,7"
+
+# Export all pages
+pyncode scribble-simple document.pdf my_scribbles.pdf output.pdf --all-pages
 ```
 
 Faster than `scribble` because it doesn't recolor - just overlays as-is.
