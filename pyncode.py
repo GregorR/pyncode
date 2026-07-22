@@ -163,8 +163,8 @@ def create_ncoded_pdf(
         
         ncode_width, ncode_height = ncode_img.size
         
-        # Convert RGB pixmap to CMYK
-        pix_cmyk = pix_rgb.convert(fitz.csCMYK)
+        # Convert RGB pixmap to CMYK by creating new Pixmap with CMYK colorspace
+        pix_cmyk = fitz.Pixmap(fitz.csCMYK, pix_rgb)
         
         # Now modify the CMYK pixmap: set K=255 for dots, K=0 for background
         # Access the raw samples data
@@ -196,15 +196,16 @@ def create_ncoded_pdf(
                     samples[idx + 3] = 0  # K = 0
         
         # Create new pixmap from modified samples
-        # PyMuPDF doesn't let us replace samples directly
+        # Copy the modified samples back to a new pixmap
+        # We need to create a new pixmap with the same dimensions and copy samples
         
-        # Create a raw CMYK image using PIL
-        cmyk_img = Image.frombytes('CMYK', (width, height), bytes(samples))
+        # Create a new CMYK pixmap from modified samples
+        # Constructor: Pixmap(colorspace, width, height, samples, alpha)
+        pix_final = fitz.Pixmap(fitz.csCMYK, width, height, bytes(samples), False)
         
-        # Save as PNG (PDF supports CMYK PNG)
-        img_buffer = io.BytesIO()
-        cmyk_img.save(img_buffer, format='PNG')
-        img_data = img_buffer.getvalue()
+        # Save as PNG bytes
+        # Note: CMYK PNG is supported by PDF
+        img_data = pix_final.tobytes("png")
         
         # Create a new page with the same dimensions
         new_page = ctx.new_page(width=page_width_pt, height=page_height_pt)
