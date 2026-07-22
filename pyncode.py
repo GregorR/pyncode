@@ -4,9 +4,7 @@ PyNcode - A Python tool for overlaying Ncode patterns and scribbles on PDFs.
 
 This tool provides two main functions:
 1. Overlay Ncode patterns (as PNG images) on PDFs - uses full CMYK conversion with K=0
-   (text will NOT remain selectable - this is required for proper pen detection)
 2. Overlay scribble PDFs (smartpen handwriting) on original PDFs with color control
-   (text DOES remain selectable)
 
 Based on the NeoLAB Ncode SDK principles:
 - Ncode overlay: Rasterizes PDF to CMYK, sets K=0 everywhere except Ncode dots (K=255)
@@ -221,123 +219,6 @@ def create_ncoded_pdf(
     # Save the output PDF
     ctx.save(output_pdf, garbage=4, deflate=True, clean=True)
     ctx.close()
-    
-    return page_count
-
-
-def create_scribble_overlay_pdf(
-    background_pdf: str,
-    scribble_pdf: str,
-    output_pdf: str,
-    scribble_color: Tuple[float, float, float] = (1.0, 0.0, 0.0),
-    scribble_opacity: float = 1.0,
-    scale: float = 1.0
-) -> int:
-    """
-    Overlay scribble PDF (smartpen handwriting) on a background PDF.
-    
-    This function merges handwriting from a scribble PDF onto the corresponding
-    pages of a background PDF. The background PDF structure is preserved,
-    meaning text remains selectable and the document remains searchable.
-    
-    The scribble PDF should contain pages with only the handwriting strokes
-    (transparent background). The function will overlay these strokes onto
-    the background PDF pages.
-    
-    Args:
-        background_pdf: Path to the original/background PDF
-        scribble_pdf: Path to the scribble PDF containing handwriting
-        output_pdf: Path to the output merged PDF
-        scribble_color: RGB tuple for recoloring the scribbles (default: red)
-                       Values should be 0.0-1.0, e.g., (1.0, 0.0, 0.0) for red
-        scribble_opacity: Opacity of the scribbles, 0.0-1.0 (default: 1.0)
-        scale: Scale factor for the scribble PDF pages (default: 1.0)
-        
-    Returns:
-        Number of pages in the output PDF
-        
-    Raises:
-        ValueError: If page counts don't match
-        FileNotFoundError: If input files don't exist
-    """
-    bg_path = Path(background_pdf)
-    scribble_path = Path(scribble_pdf)
-    
-    if not bg_path.exists():
-        raise FileNotFoundError(f"Background PDF not found: {background_pdf}")
-    if not scribble_path.exists():
-        raise FileNotFoundError(f"Scribble PDF not found: {scribble_pdf}")
-    
-    # Open both PDFs
-    bg_doc = fitz.open(background_pdf)
-    scribble_doc = fitz.open(scribble_pdf)
-    
-    bg_page_count = len(bg_doc)
-    scribble_page_count = len(scribble_doc)
-    
-    # Use the minimum of the two page counts
-    page_count = min(bg_page_count, scribble_page_count)
-    
-    if page_count == 0:
-        bg_doc.close()
-        scribble_doc.close()
-        raise ValueError("One or both PDFs have no pages")
-    
-    if bg_page_count != scribble_page_count:
-        click.echo(
-            f"Warning: Page count mismatch - background has {bg_page_count} pages, "
-            f"scribbles have {scribble_page_count} pages. Using {page_count} pages.",
-            err=True
-        )
-    
-    # Process each page
-    for page_num in range(page_count):
-        bg_page = bg_doc[page_num]
-        scribble_page = scribble_doc[page_num]
-        
-        # Render the scribble page to a pixmap with the specified color
-        scribble_rect = scribble_page.rect
-        zoom = 2.0
-        mat = fitz.Matrix(zoom * scale, zoom * scale)
-        pix = scribble_page.get_pixmap(matrix=mat, alpha=True)
-        
-        # Apply opacity to alpha channel
-        if scribble_opacity < 1.0:
-            samples = bytearray(pix.samples)
-            alpha_offset = pix.n - 1  # Alpha is the last byte
-            for i in range(len(samples) - alpha_offset, len(samples), pix.n):
-                samples[i] = int(samples[i] * scribble_opacity)
-            pix = fitz.Pixmap(pix.colorspace, pix.width, pix.height, bytes(samples), True)
-        
-        # Get the pixmap as bytes
-        img_data = pix.tobytes("png")
-        
-        # Calculate the size for insertion
-        scaled_width = scribble_rect.width * scale
-        scaled_height = scribble_rect.height * scale
-        
-        # Position at top-left
-        rect = fitz.Rect(0, 0, scaled_width, scaled_height)
-        
-        # Insert the scribble image as an overlay
-        # Note: opacity is handled by adjusting the alpha channel in the pixmap before saving
-        bg_page.insert_image(
-            rect,
-            stream=img_data,
-            overlay=True
-        )
-    
-    # Save the output PDF
-    bg_doc.save(
-        output_pdf,
-        garbage=4,
-        deflate=True,
-        clean=True,
-        linear=True
-    )
-    
-    bg_doc.close()
-    scribble_doc.close()
     
     return page_count
 
@@ -667,7 +548,7 @@ def overlay_scribbles_with_color(
 
 
 @click.group()
-@click.version_option(version='1.2.0')
+@click.version_option(version='0.1.0')
 def cli():
     """PyNcode - Tool for overlaying Ncode patterns and scribbles on PDFs."""
     pass
@@ -744,7 +625,6 @@ def ncode(
             ncode_dpi=ncode_dpi
         )
         click.echo(f"Successfully created Ncoded PDF with {pages} pages → {output_pdf}")
-        click.echo("Note: PDF has been rasterized. Text is NOT selectable (required for pen).")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
@@ -841,7 +721,6 @@ def scribble(
             click.echo("  All pages exported (including pages without scribbles)")
         else:
             click.echo("  Only pages with scribbles exported")
-        click.echo("  Background PDF structure preserved - text is selectable!")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
