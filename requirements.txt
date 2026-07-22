@@ -1,0 +1,8 @@
+# PyMuPDF - Python binding for MuPDF (same library used by the C++ Ncode SDK)
+PyMuPDF>=1.23.0
+
+# Pillow for image processing
+Pillow>=10.0.0
+
+# Click for CLI interface
+click>=8.0.0
