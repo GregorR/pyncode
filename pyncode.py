@@ -299,6 +299,14 @@ def create_scribble_overlay_pdf(
         mat = fitz.Matrix(zoom * scale, zoom * scale)
         pix = scribble_page.get_pixmap(matrix=mat, alpha=True)
         
+        # Apply opacity to alpha channel
+        if scribble_opacity < 1.0:
+            samples = bytearray(pix.samples)
+            alpha_offset = pix.n - 1  # Alpha is the last byte
+            for i in range(len(samples) - alpha_offset, len(samples), pix.n):
+                samples[i] = int(samples[i] * scribble_opacity)
+            pix = fitz.Pixmap(pix.colorspace, pix.width, pix.height, bytes(samples), True)
+        
         # Get the pixmap as bytes
         img_data = pix.tobytes("png")
         
@@ -310,11 +318,11 @@ def create_scribble_overlay_pdf(
         rect = fitz.Rect(0, 0, scaled_width, scaled_height)
         
         # Insert the scribble image as an overlay
+        # Note: opacity is handled by adjusting the alpha channel in the pixmap before saving
         bg_page.insert_image(
             rect,
             stream=img_data,
-            overlay=True,
-            opacity=scribble_opacity
+            overlay=True
         )
     
     # Save the output PDF
@@ -371,6 +379,14 @@ def overlay_scribbles_simple(
         zoom = 2.0
         pix = scribble_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
         
+        # Apply opacity to alpha channel
+        if scribble_opacity < 1.0:
+            samples = bytearray(pix.samples)
+            alpha_offset = pix.n - 1  # Alpha is the last byte
+            for i in range(len(samples) - alpha_offset, len(samples), pix.n):
+                samples[i] = int(samples[i] * scribble_opacity)
+            pix = fitz.Pixmap(pix.colorspace, pix.width, pix.height, bytes(samples), True)
+        
         # Convert to bytes
         img_bytes = pix.tobytes("png")
         
@@ -378,12 +394,11 @@ def overlay_scribbles_simple(
         scribble_rect = scribble_page.rect
         rect = fitz.Rect(0, 0, scribble_rect.width, scribble_rect.height)
         
-        # Insert image as overlay
+        # Insert image as overlay (opacity handled in pixmap)
         bg_page.insert_image(
             rect,
             stream=img_bytes,
-            overlay=True,
-            opacity=scribble_opacity
+            overlay=True
         )
     
     bg_doc.save(output_pdf, garbage=4, deflate=True)
@@ -450,6 +465,14 @@ def overlay_scribbles_with_color(
                     b = int(scribble_color[2] * 255)
                     rgba_pix.set_pixel(x, y, (r, g, b, alpha))
         
+        # Apply opacity to alpha channel
+        if scribble_opacity < 1.0:
+            samples = bytearray(rgba_pix.samples)
+            alpha_offset = rgba_pix.n - 1  # Alpha is the last byte
+            for i in range(len(samples) - alpha_offset, len(samples), rgba_pix.n):
+                samples[i] = int(samples[i] * scribble_opacity)
+            rgba_pix = fitz.Pixmap(rgba_pix.colorspace, rgba_pix.width, rgba_pix.height, bytes(samples), True)
+        
         # Convert to image bytes
         img_bytes = rgba_pix.tobytes("png")
         
@@ -460,8 +483,7 @@ def overlay_scribbles_with_color(
         bg_page.insert_image(
             rect,
             stream=img_bytes,
-            overlay=True,
-            opacity=scribble_opacity
+            overlay=True
         )
     
     bg_doc.save(output_pdf, garbage=4, deflate=True)
