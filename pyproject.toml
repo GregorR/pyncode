@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyncode"
-version = "1.0.0"
+version = "0.1.0"
 description = "Tool for overlaying Ncode patterns and scribbles on PDFs"
 readme = "README.md"
 license = {text = "MIT"}
@@ -33,18 +33,10 @@ dependencies = [
     "click>=8.0.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=23.0.0",
-    "flake8>=6.0.0",
-]
-
 [project.scripts]
 pyncode = "pyncode.pyncode:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/pyncode"
-Documentation = "https://github.com/yourusername/pyncode#readme"
-Repository = "https://github.com/yourusername/pyncode"
+Homepage = "https://github.com/GregorR/pyncode"
+Documentation = "https://github.com/GregorR/pyncode#readme"
+Repository = "https://github.com/GregorR/pyncode"
