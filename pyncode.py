@@ -147,10 +147,10 @@ def create_ncoded_pdf(
         
         # Render page to RGB pixmap at the specified DPI
         mat = fitz.Matrix(scale, scale)
-        pix = src_page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        pix_rgb = src_page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
         
-        width = pix.width
-        height = pix.height
+        width = pix_rgb.width
+        height = pix_rgb.height
         
         # Load the Ncode PNG
         png_path = ncode_pngs_list[page_num]
@@ -163,16 +163,15 @@ def create_ncoded_pdf(
         
         ncode_width, ncode_height = ncode_img.size
         
-        # Create a CMYK pixmap for the output
-        pix_cmyk = fitz.Pixmap(fitz.csCMYK, width, height, 0)
+        # Convert RGB pixmap to CMYK
+        pix_cmyk = pix_rgb.convert(fitz.csCMYK)
         
-        # Process each pixel - this is the key Ncode algorithm
+        # Now modify the CMYK pixmap: set K=255 for dots, K=0 for background
+        # Access the raw samples data
+        samples = bytearray(pix_cmyk.samples)
+        
         for y in range(height):
             for x in range(width):
-                # Get RGB value from source
-                rgb = pix.get_pixel(x, y)
-                r, g, b = rgb[0], rgb[1], rgb[2]
-                
                 # Check if this pixel is an Ncode dot
                 # Scale coordinates to match Ncode image size
                 nx = int(x * ncode_width / width) if width > 0 else 0
@@ -185,19 +184,27 @@ def create_ncoded_pdf(
                     is_dot = (ncode_pixel == 0)
                 
                 if is_dot:
-                    # Ncode dot: pure black (K only)
-                    # This is what the pen sees as a "dot"
-                    pix_cmyk.set_pixel(x, y, (0, 0, 0, 255))
+                    # Ncode dot: pure black (K only) - C=0, M=0, Y=0, K=255
+                    idx = (y * width + x) * 4
+                    samples[idx] = 0     # C
+                    samples[idx + 1] = 0  # M
+                    samples[idx + 2] = 0  # Y
+                    samples[idx + 3] = 255  # K
                 else:
-                    # Background: inverted RGB with K=0
-                    # This removes the K component so pen doesn't see it
-                    c = 255 - r
-                    m = 255 - g
-                    y_val = 255 - b
-                    pix_cmyk.set_pixel(x, y, (c, m, y_val, 0))
+                    # Background: set K=0 (inverted RGB is already in C, M, Y)
+                    idx = (y * width + x) * 4
+                    samples[idx + 3] = 0  # K = 0
         
-        # Convert CMYK pixmap to image and insert into new page
-        img_data = pix_cmyk.tobytes("png")
+        # Create new pixmap from modified samples
+        # PyMuPDF doesn't let us replace samples directly
+        
+        # Create a raw CMYK image using PIL
+        cmyk_img = Image.frombytes('CMYK', (width, height), bytes(samples))
+        
+        # Save as PNG (PDF supports CMYK PNG)
+        img_buffer = io.BytesIO()
+        cmyk_img.save(img_buffer, format='PNG')
+        img_data = img_buffer.getvalue()
         
         # Create a new page with the same dimensions
         new_page = ctx.new_page(width=page_width_pt, height=page_height_pt)

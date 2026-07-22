@@ -62,11 +62,12 @@ pyncode ncode --help
 **⚠️ Warning**: This command rasterizes the PDF. Text will NOT remain selectable. This is **required** for proper Ncode pen detection.
 
 **How it works:**
-1. Renders each PDF page to CMYK at 600 DPI
-2. For each pixel:
+1. Renders each PDF page to RGB at 600 DPI
+2. Converts to CMYK
+3. For each pixel:
    - If Ncode dot: CMYK = (0, 0, 0, 255) - pure black (K only)
-   - If background: CMYK = (255-R, 255-G, 255-B, 0) - no K component
-3. The pen sees only the K=255 dots, ignoring the K=0 background
+   - If background: CMYK = (C, M, Y, 0) - no K component
+4. The pen sees only the K=255 dots, ignoring the K=0 background
 
 ### 2. Scribble Overlay (Preserves PDF Structure, Text IS Selectable)
 
