@@ -441,7 +441,7 @@ def overlay_scribbles_with_color(
         # Apply color transformation
         for y in range(rgba_pix.height):
             for x in range(rgba_pix.width):
-                orig = pix.get_pixel(x, y)
+                orig = pix.pixel(x, y)  # Use pixel() not get_pixel()
                 alpha = orig[3] if len(orig) > 3 else 255
                 
                 if alpha > 0:
