@@ -203,9 +203,9 @@ def create_ncoded_pdf(
         # Constructor: Pixmap(colorspace, width, height, samples, alpha)
         pix_final = fitz.Pixmap(fitz.csCMYK, width, height, bytes(samples), False)
         
-        # Save as PNG bytes
-        # Note: CMYK PNG is supported by PDF
-        img_data = pix_final.tobytes("png")
+        # Save as PAM bytes (lossless format that supports CMYK)
+        # PAM is supported by PDF and preserves the exact CMYK values
+        img_data = pix_final.tobytes("pam")
         
         # Create a new page with the same dimensions
         new_page = ctx.new_page(width=page_width_pt, height=page_height_pt)
