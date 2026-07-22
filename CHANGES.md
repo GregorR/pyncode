@@ -1,91 +1,99 @@
 # PyNcode Changes
 
-## Version 1.1.0 (Current)
+## Version 1.2.0 (Current)
 
-### Bug Fixes
+### Major Correction
 
-1. **Ncode overlay obscuring PDF - FIXED**
-   - The Ncode PNGs now have transparent backgrounds
-   - Only the black dots are visible, the white background is transparent
-   - Original PDF content remains fully visible and selectable
+**Ncode vs. Scribble requirements clarified:**
 
-2. **Manual PNG file listing - IMPROVED**
-   - Added auto-detection of Ncode PNG files using a prefix
-   - Similar to the original NeoLAB SDK naming convention
-   - Example: `ncode_3_28_10_` automatically finds `ncode_3_28_10_0.png`, `ncode_3_28_10_1.png`, etc.
+I mistakenly applied the "preserve PDF structure" requirement to BOTH tools, but they have **opposite** requirements:
 
-### New Features
+1. **Ncode overlay (`ncode` command)**: Must rasterize and do K=0 conversion
+   - Text becomes non-selectable - **this is required**
+   - The Neo smartpen needs to distinguish Ncode dots (K=255) from background (K=0)
+   - Follows the original NeoLAB SDK's CMYK conversion approach
 
-1. **Auto-detection of Ncode PNGs**
-   ```bash
-   # Before: Had to list every file
-   pyncode ncode input.pdf output.pdf --pngs page0.png page1.png page2.png
-   
-   # Now: Just specify the prefix
-   pyncode ncode input.pdf output.pdf ncode_3_28_10_
-   ```
+2. **Scribble overlay (`scribble` command)**: Must preserve PDF structure
+   - Text remains selectable - **this is required**
+   - Original PDF is not modified
+   - Scribbles are added as transparent overlays
 
-2. **Flexible CLI options**
-   - Can use prefix OR explicit PNG files
-   - Both methods can be combined (explicit takes precedence)
-   - `--num-pages` option to override auto-detected page count
+### Changes in 1.2.0
 
-### Changed Files
+#### Ncode Overlay (`ncode` command)
 
-- `pyncode.py`:
-  - `load_ncode_png()`: Now returns PNG with transparent background
-  - `create_ncoded_pdf()`: Updated to handle transparent PNGs and prefix auto-detection
-  - `find_ncode_pngs()`: New function for auto-detecting PNG files
-  - `ncode` command: Updated CLI to support prefix and explicit PNGs
+**Before (wrong):** Transparent PNG overlay, preserved PDF structure, text selectable
 
-- `README.md`: Updated documentation with new features
-
-- `examples/quick_start.py`: Updated to demonstrate auto-detection
-
-### Usage Examples
-
-#### Ncode Overlay with Auto-Detection
-
-```bash
-# Auto-detect Ncode PNGs with prefix
-pyncode ncode input.pdf output.pdf ncode_3_28_10_
-
-# Or specify explicit PNG files
-pyncode ncode input.pdf output.pdf --pngs page0.png page1.png page2.png
-
-# Override auto-detected page count
-pyncode ncode input.pdf output.pdf ncode_3_28_10_ --num-pages 10
-```
-
-#### Scribble Overlay (unchanged)
-
-```bash
-# Default red scribbles
-pyncode scribble document.pdf scribbles.pdf output.pdf
-
-# Custom color
-pyncode scribble document.pdf scribbles.pdf output.pdf --color blue
-
-# Custom opacity
-pyncode scribble document.pdf scribbles.pdf output.pdf --opacity 0.7
-```
-
-### Python API Changes
+**After (correct):** Full CMYK K-removal conversion, rasterizes PDF, text NOT selectable
 
 ```python
-from pyncode.pyncode import create_ncoded_pdf
-
-# Before: Required list of PNG paths
-create_ncoded_pdf(
-    'input.pdf',
-    ['ncode_0.png', 'ncode_1.png', 'ncode_2.png'],
-    'output.pdf'
-)
-
-# Now: Can use prefix for auto-detection
-create_ncoded_pdf(
-    'input.pdf',
-    'ncode_',  # Prefix - auto-detects ncode_0.png, ncode_1.png, etc.
-    'output.pdf'
-)
+# Key algorithm - same as original NeoLAB SDK
+for each pixel:
+    if is_ncode_dot:
+        CMYK = (0, 0, 0, 255)  # Pure black - pen sees this as a dot
+    else:
+        CMYK = (255-R, 255-G, 255-B, 0)  # No K component - pen ignores this
 ```
+
+**Why this is required:**
+- The Neo smartpen uses an IR camera to detect Ncode
+- The pen distinguishes dots (K=255) from background (K=0)
+- If background has K > 0 (like regular text), pen can't tell the difference
+- Text becomes non-selectable, but the pen works correctly
+
+#### Scribble Overlay (`scribble` command)
+
+**Before (correct):** Image overlay, preserved PDF structure, text selectable
+
+**After (correct):** No change - this was already correct
+
+```python
+# Scribbles are added as transparent image overlays
+bg_page.insert_image(rect, stream=img_bytes, overlay=True)
+```
+
+**Why this works:**
+- Original PDF is not modified
+- Scribbles are overlaid on top
+- Text remains fully selectable and searchable
+
+### CLI Changes
+
+```bash
+# Ncode overlay (rasterizes, text NOT selectable)
+pyncode ncode input.pdf output.pdf ncode_3_28_10_
+# Note: Output is rasterized, required for pen detection
+
+# Scribble overlay (preserves PDF, text IS selectable)  
+pyncode scribble original.pdf scribbles.pdf output.pdf --color red
+# Note: Original PDF structure preserved, text selectable
+```
+
+### Recommended Workflow
+
+```bash
+# 1. Keep original PDF (selectable text)
+# 2. Create Ncoded version for printing
+pyncode ncode original.pdf ncoded.pdf ncode_3_28_10_
+# Print ncoded.pdf and use with Neo smartpen
+
+# 3. After writing, overlay scribbles on ORIGINAL (not Ncoded)
+pyncode scribble original.pdf scribbles.pdf annotated.pdf --color red
+# annotated.pdf has your handwriting + selectable text
+```
+
+### Why Not Overlay Scribbles on Ncoded PDF?
+
+If you overlay scribbles on the Ncoded PDF:
+- The Ncoded PDF is already rasterized
+- Text is not selectable
+- You lose searchability
+
+Better: Keep original, create separate Ncoded version for printing, overlay scribbles on original.
+
+### Files Changed
+
+- `pyncode.py`: Completely rewrote Ncode overlay to use CMYK K-removal
+- `README.md`: Clarified different requirements for each tool
+- `test_fix.py`: Added tests for both behaviors
+- `CHANGES.md`: This changelog

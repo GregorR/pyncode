@@ -3,12 +3,14 @@
 PyNcode - A Python tool for overlaying Ncode patterns and scribbles on PDFs.
 
 This tool provides two main functions:
-1. Overlay Ncode patterns (as PNG images) on PDFs - preserving text selectability
+1. Overlay Ncode patterns (as PNG images) on PDFs - uses full CMYK conversion with K=0
+   (text will NOT remain selectable - this is required for proper pen detection)
 2. Overlay scribble PDFs (smartpen handwriting) on original PDFs with color control
+   (text DOES remain selectable)
 
 Based on the NeoLAB Ncode SDK principles:
-- Ncode overlay uses a two-layer approach: artwork layer (CMYK with K=0) + mask layer (pure K)
-- Scribble overlay preserves the background PDF structure for text selectability
+- Ncode overlay: Rasterizes PDF to CMYK, sets K=0 everywhere except Ncode dots (K=255)
+- Scribble overlay: Preserves PDF structure, adds image overlays
 """
 
 import os
@@ -23,54 +25,6 @@ import io
 import fitz  # PyMuPDF
 from PIL import Image
 import click
-
-
-def load_ncode_png(png_path: str, dpi: int = 600) -> Tuple[bytes, int, int]:
-    """
-    Load an Ncode PNG image and return it with transparent background.
-    
-    Ncode PNGs are 1-bit (black dots on white background). For proper Ncode overlay,
-    the white background must be made transparent so it doesn't obscure the PDF.
-    
-    Args:
-        png_path: Path to the Ncode PNG file
-        dpi: DPI of the Ncode image (default: 600)
-        
-    Returns:
-        Tuple of (PNG data bytes with transparency, width, height)
-    """
-    img = Image.open(png_path)
-    
-    # Convert to RGBA if not already
-    if img.mode != 'RGBA':
-        if img.mode == '1':
-            # 1-bit image - convert to RGBA with transparency
-            img = img.convert('L')  # grayscale first
-        elif img.mode != 'L':
-            img = img.convert('L')  # grayscale
-        
-        # Now create RGBA with transparency
-        # White/light pixels become transparent, dark pixels (dots) stay opaque
-        img_rgba = Image.new('RGBA', img.size)
-        for x in range(img.width):
-            for y in range(img.height):
-                gray = img.getpixel((x, y))
-                if gray < 128:
-                    # Black dot - keep opaque black
-                    img_rgba.putpixel((x, y), (0, 0, 0, 255))
-                else:
-                    # White background - make fully transparent
-                    img_rgba.putpixel((x, y), (0, 0, 0, 0))
-        img = img_rgba
-    
-    width, height = img.size
-    
-    # Save to PNG in memory with transparency
-    png_buffer = io.BytesIO()
-    img.save(png_buffer, format='PNG')
-    png_data = png_buffer.getvalue()
-    
-    return png_data, width, height
 
 
 def find_ncode_pngs(prefix: str, num_pages: int) -> List[str]:
@@ -111,17 +65,25 @@ def create_ncoded_pdf(
     auto_detect: bool = True
 ) -> int:
     """
-    Overlay Ncode patterns (PNG images) on a PDF, following the NeoLAB Ncode SDK approach.
+    Overlay Ncode patterns (PNG images) on a PDF using the full CMYK K-removal approach.
     
-    The Ncode overlay preserves the original PDF content - text remains selectable.
-    Ncode dots are overlaid as a transparent PNG where only the black dots are visible.
+    This follows the original NeoLAB Ncode SDK approach:
+    1. Rasterize each PDF page to a CMYK pixmap at the specified DPI
+    2. For each pixel:
+       - If Ncode dot: Set CMYK = (0, 0, 0, 255) - pure black (K only)
+       - If not dot: Set CMYK = (255-R, 255-G, 255-Y, 0) - no K component
+    3. Save as PDF with the Ncode dots clearly distinguishable for the pen
+    
+    IMPORTANT: This process rasterizes the PDF, so text will NOT remain selectable.
+    This is required for proper Ncode pen detection - the pen needs to distinguish
+    the Ncode dots (K=255) from the background (K=0).
     
     Args:
         input_pdf: Path to the input PDF
         ncode_pngs: Either a list of PNG paths OR a prefix string for auto-detection
                    If a prefix, looks for prefix0.png, prefix1.png, etc.
         output_pdf: Path to the output PDF
-        dpi: DPI for rendering (used for coordinate calculations)
+        dpi: DPI for rendering (default: 600, matches Ncode standard)
         ncode_dpi: DPI of the Ncode PNG images (default: 600)
         auto_detect: If True and ncode_pngs is a string, auto-detect PNG files
         
@@ -167,54 +129,88 @@ def create_ncoded_pdf(
             f"but {len(ncode_pngs_list)} Ncode PNGs provided"
         )
     
-    # Open the input PDF for modification
-    doc = fitz.open(input_pdf)
+    # Open MuPDF context and create output document
+    ctx = fitz.open()
     
-    # Process each page
     for page_num in range(page_count):
-        page = doc[page_num]
+        # Load source page
+        src_doc = fitz.open(input_pdf)
+        src_page = src_doc[page_num]
+        
+        # Get page dimensions in points
+        page_rect = src_page.rect
+        page_width_pt = page_rect.width
+        page_height_pt = page_rect.height
+        
+        # Calculate scale: dpi / 72 (PDF is 72 DPI, we render at specified DPI)
+        scale = dpi / 72.0
+        
+        # Render page to RGB pixmap at the specified DPI
+        mat = fitz.Matrix(scale, scale)
+        pix = src_page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        
+        width = pix.width
+        height = pix.height
+        
+        # Load the Ncode PNG
         png_path = ncode_pngs_list[page_num]
+        ncode_img = Image.open(png_path)
         
-        # Get page dimensions in points (PDF coordinate system)
-        page_rect = page.rect
-        page_width = page_rect.width
-        page_height = page_rect.height
+        # Convert Ncode to 1-bit if needed
+        if ncode_img.mode != '1':
+            ncode_img = ncode_img.convert('L')
+            ncode_img = ncode_img.point(lambda x: 0 if x < 128 else 255, mode='1')
         
-        # Load the Ncode PNG with transparent background
-        png_data, img_width, img_height = load_ncode_png(png_path, ncode_dpi)
+        ncode_width, ncode_height = ncode_img.size
         
-        # Calculate the size to draw the Ncode image
-        # Ncode images are typically at 600 DPI, PDF is 72 DPI
-        # So we need to scale: pdf_points = pixels * (72 / dpi)
-        ncode_width_pt = img_width * 72 / ncode_dpi
-        ncode_height_pt = img_height * 72 / ncode_dpi
+        # Create a CMYK pixmap for the output
+        pix_cmyk = fitz.Pixmap(fitz.csCMYK, width, height, 0)
         
-        # Calculate scale factor to fit the Ncode image to the page
-        # Ncode images should cover the entire page
-        scale_x = page_width / ncode_width_pt
-        scale_y = page_height / ncode_height_pt
-        scale = min(scale_x, scale_y)
+        # Process each pixel - this is the key Ncode algorithm
+        for y in range(height):
+            for x in range(width):
+                # Get RGB value from source
+                rgb = pix.get_pixel(x, y)
+                r, g, b = rgb[0], rgb[1], rgb[2]
+                
+                # Check if this pixel is an Ncode dot
+                # Scale coordinates to match Ncode image size
+                nx = int(x * ncode_width / width) if width > 0 else 0
+                ny = int(y * ncode_height / height) if height > 0 else 0
+                
+                # Check Ncode image (0 = dot, 255 = background)
+                is_dot = False
+                if nx < ncode_width and ny < ncode_height:
+                    ncode_pixel = ncode_img.getpixel((nx, ny))
+                    is_dot = (ncode_pixel == 0)
+                
+                if is_dot:
+                    # Ncode dot: pure black (K only)
+                    # This is what the pen sees as a "dot"
+                    pix_cmyk.set_pixel(x, y, (0, 0, 0, 255))
+                else:
+                    # Background: inverted RGB with K=0
+                    # This removes the K component so pen doesn't see it
+                    c = 255 - r
+                    m = 255 - g
+                    y_val = 255 - b
+                    pix_cmyk.set_pixel(x, y, (c, m, y_val, 0))
         
-        # Center the Ncode image on the page
-        scaled_width = ncode_width_pt * scale
-        scaled_height = ncode_height_pt * scale
-        x_offset = (page_width - scaled_width) / 2
-        y_offset = (page_height - scaled_height) / 2
+        # Convert CMYK pixmap to image and insert into new page
+        img_data = pix_cmyk.tobytes("png")
         
-        # Create image insertion parameters
-        rect = fitz.Rect(x_offset, y_offset, x_offset + scaled_width, y_offset + scaled_height)
+        # Create a new page with the same dimensions
+        new_page = ctx.new_page(width=page_width_pt, height=page_height_pt)
         
-        # Insert the image as an overlay (over the existing content)
-        # The transparent background won't obscure the PDF
-        page.insert_image(
-            rect,
-            stream=png_data,
-            overlay=True  # Draw on top of existing content
-        )
+        # Insert the CMYK image to fill the page
+        rect = fitz.Rect(0, 0, page_width_pt, page_height_pt)
+        new_page.insert_image(rect, stream=img_data)
+        
+        src_doc.close()
     
     # Save the output PDF
-    doc.save(output_pdf, garbage=4, deflate=True, clean=True)
-    doc.close()
+    ctx.save(output_pdf, garbage=4, deflate=True, clean=True)
+    ctx.close()
     
     return page_count
 
@@ -289,15 +285,8 @@ def create_scribble_overlay_pdf(
         bg_page = bg_doc[page_num]
         scribble_page = scribble_doc[page_num]
         
-        # Get the background page dimensions
-        page_rect = bg_page.rect
-        
         # Render the scribble page to a pixmap with the specified color
-        # We use the page's media box for rendering
         scribble_rect = scribble_page.rect
-        mat = fitz.Matrix(scale, scale)  # Apply scale
-        
-        # Render scribble page at high quality (2x DPI for better stroke quality)
         zoom = 2.0
         mat = fitz.Matrix(zoom * scale, zoom * scale)
         pix = scribble_page.get_pixmap(matrix=mat, alpha=True)
@@ -313,7 +302,6 @@ def create_scribble_overlay_pdf(
         rect = fitz.Rect(0, 0, scaled_width, scaled_height)
         
         # Insert the scribble image as an overlay
-        # We use insert_image which preserves the background PDF structure
         bg_page.insert_image(
             rect,
             stream=img_data,
@@ -327,7 +315,7 @@ def create_scribble_overlay_pdf(
         garbage=4,
         deflate=True,
         clean=True,
-        linear=True  # Optimize for web viewing
+        linear=True
     )
     
     bg_doc.close()
@@ -336,40 +324,6 @@ def create_scribble_overlay_pdf(
     return page_count
 
 
-def create_scribble_overlay_pdf_vector(
-    background_pdf: str,
-    scribble_pdf: str,
-    output_pdf: str,
-    scribble_color: Tuple[float, float, float] = (1.0, 0.0, 0.0),
-    scribble_opacity: float = 1.0
-) -> int:
-    """
-    Overlay scribble PDF using vector insertion to preserve stroke quality.
-    
-    This function uses insert_pdf to overlay scribble pages, which preserves
-    vector data and allows for proper color transformation. The scribble strokes
-    will remain crisp at any zoom level.
-    
-    Args:
-        background_pdf: Path to the original/background PDF
-        scribble_pdf: Path to the scribble PDF containing handwriting
-        output_pdf: Path to the output merged PDF
-        scribble_color: RGB tuple for recoloring the scribbles (default: red)
-        scribble_opacity: Opacity of the scribbles, 0.0-1.0 (default: 1.0)
-        
-    Returns:
-        Number of pages in the output PDF
-    """
-    # Note: The vector overlay method is experimental.
-    # For best results, use overlay_scribbles_simple or overlay_scribbles_with_color
-    # which use rasterized overlay for better compatibility.
-    raise NotImplementedError(
-        "Vector overlay is not yet implemented. "
-        "Please use overlay_scribbles_simple or overlay_scribbles_with_color instead."
-    )
-
-
-# Simplified vector overlay that actually works with PyMuPDF
 def overlay_scribbles_simple(
     background_pdf: str,
     scribble_pdf: str,
@@ -406,7 +360,7 @@ def overlay_scribbles_simple(
         scribble_page = scribble_doc[page_num]
         
         # Render scribble page to pixmap (preserves alpha channel)
-        zoom = 2.0  # High quality
+        zoom = 2.0
         pix = scribble_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
         
         # Convert to bytes
@@ -470,7 +424,6 @@ def overlay_scribbles_with_color(
         scribble_page = scribble_doc[page_num]
         
         # Render scribble page with color transformation
-        # First, render to get the alpha mask (handwriting strokes)
         zoom = 2.0
         pix = scribble_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
         
@@ -478,15 +431,12 @@ def overlay_scribbles_with_color(
         rgba_pix = fitz.Pixmap(fitz.csRGB, pix)
         
         # Apply color transformation
-        # For each pixel, replace RGB with target color while preserving alpha
         for y in range(rgba_pix.height):
             for x in range(rgba_pix.width):
-                # Get original pixel
                 orig = pix.get_pixel(x, y)
                 alpha = orig[3] if len(orig) > 3 else 255
                 
                 if alpha > 0:
-                    # Set to target color with original alpha
                     r = int(scribble_color[0] * 255)
                     g = int(scribble_color[1] * 255)
                     b = int(scribble_color[2] * 255)
@@ -514,7 +464,7 @@ def overlay_scribbles_with_color(
 
 
 @click.group()
-@click.version_option(version='1.0.0')
+@click.version_option(version='1.2.0')
 def cli():
     """PyNcode - Tool for overlaying Ncode patterns and scribbles on PDFs."""
     pass
@@ -526,7 +476,7 @@ def cli():
 @click.argument('ncode_prefix', type=str, default='')
 @click.option('--pngs', '-p', multiple=True, type=click.Path(exists=True),
               help='Explicit PNG file paths (overrides prefix)')
-@click.option('--dpi', '-d', default=600, help='DPI of the PDF (default: 600)')
+@click.option('--dpi', '-d', default=600, help='DPI for rendering (default: 600)')
 @click.option('--ncode-dpi', default=600, help='DPI of Ncode PNG images (default: 600)')
 @click.option('--num-pages', '-n', type=int, default=None,
               help='Number of pages (defaults to PDF page count)')
@@ -539,7 +489,7 @@ def ncode(
     ncode_dpi: int,
     num_pages: int
 ):
-    """Overlay Ncode PNG patterns on a PDF.
+    """Overlay Ncode PNG patterns on a PDF using CMYK K-removal.
     
     INPUT_PDF: Path to the input PDF
     
@@ -547,26 +497,22 @@ def ncode(
     
     NCODE_PREFIX: Optional prefix for auto-detecting PNG files.
                   Looks for prefix0.png, prefix1.png, etc.
-                  If provided with --pngs, --pngs takes precedence.
+    
+    IMPORTANT: This process rasterizes the PDF. Text will NOT remain selectable.
+    This is REQUIRED for proper Ncode pen detection.
     
     Examples:
-        # Auto-detect with prefix (like the original SDK)
+        # Auto-detect with prefix
         pyncode ncode input.pdf output.pdf ncode_3_28_10_
         
         # Explicit PNG files
-        pyncode ncode input.pdf output.pdf --pngs page0.png page1.png page2.png
-        
-        # Combined (explicit PNGs take precedence)
-        pyncode ncode input.pdf output.pdf ncode_ --pngs custom1.png custom2.png
+        pyncode ncode input.pdf output.pdf --pngs page0.png page1.png
     """
     # Determine which PNG files to use
     if pngs:
-        # Explicit PNGs provided
         ncode_pngs_list = list(pngs)
     elif ncode_prefix:
-        # Use prefix for auto-detection
         if num_pages is None:
-            # Get page count from PDF
             doc = fitz.open(input_pdf)
             num_pages = len(doc)
             doc.close()
@@ -594,7 +540,8 @@ def ncode(
             dpi=dpi,
             ncode_dpi=ncode_dpi
         )
-        click.echo(f"Successfully overlayed Ncode on {pages} pages → {output_pdf}")
+        click.echo(f"Successfully created Ncoded PDF with {pages} pages → {output_pdf}")
+        click.echo("Note: PDF has been rasterized. Text is NOT selectable (required for pen).")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
@@ -605,7 +552,7 @@ def ncode(
 @click.argument('scribble_pdf', type=click.Path(exists=True))
 @click.argument('output_pdf', type=click.Path())
 @click.option('--color', '-c', default='red',
-              help='Scribble color: red, blue, green, black, or RGB triplet (e.g., "1,0,0")')
+              help='Scribble color: red, blue, green, black, or RGB triplet')
 @click.option('--opacity', '-o', default=1.0, type=float,
               help='Scribble opacity (0.0-1.0, default: 1.0)')
 def scribble(
@@ -615,7 +562,7 @@ def scribble(
     color: str,
     opacity: float
 ):
-    """Overlay scribble PDF (smartpen handwriting) on a background PDF.
+    """Overlay scribble PDF on background PDF (preserves text selectability).
     
     BACKGROUND_PDF: Path to the original/background PDF
     
@@ -623,13 +570,9 @@ def scribble(
     
     OUTPUT_PDF: Path to the output merged PDF
     
-    The background PDF structure is preserved (text remains selectable).
-    
-    Example:
-        pyncode scribble document.pdf my_scribbles.pdf merged.pdf --color red
+    The background PDF structure is preserved - text remains selectable!
     """
-    # Parse color
-    scribble_color = (1.0, 0.0, 0.0)  # Default: red
+    scribble_color = (1.0, 0.0, 0.0)
     
     color_lower = color.lower()
     if color_lower == 'red':
@@ -659,7 +602,6 @@ def scribble(
         click.echo(f"Error: Unknown color '{color}'", err=True)
         raise click.Abort()
     
-    # Validate opacity
     if opacity < 0.0 or opacity > 1.0:
         click.echo("Error: Opacity must be between 0.0 and 1.0", err=True)
         raise click.Abort()
@@ -675,6 +617,7 @@ def scribble(
         color_str = f"{int(scribble_color[0]*255)},{int(scribble_color[1]*255)},{int(scribble_color[2]*255)}"
         click.echo(f"Successfully overlaid scribbles on {pages} pages → {output_pdf}")
         click.echo(f"  Color: {color_str}, Opacity: {opacity}")
+        click.echo("  Background PDF structure preserved - text is selectable!")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
@@ -692,21 +635,7 @@ def scribble_simple(
     output_pdf: str,
     opacity: float
 ):
-    """Simple scribble overlay (no color transformation, faster).
-    
-    This is a faster version that simply overlays the scribbles without
-    color transformation. Use this when you don't need to recolor the
-    handwriting.
-    
-    BACKGROUND_PDF: Path to the original/background PDF
-    
-    SCRIBBLE_PDF: Path to the scribble PDF
-    
-    OUTPUT_PDF: Path to the output PDF
-    
-    Example:
-        pyncode scribble-simple document.pdf my_scribbles.pdf merged.pdf
-    """
+    """Simple scribble overlay (no color transformation, faster)."""
     if opacity < 0.0 or opacity > 1.0:
         click.echo("Error: Opacity must be between 0.0 and 1.0", err=True)
         raise click.Abort()

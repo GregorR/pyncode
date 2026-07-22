@@ -2,14 +2,31 @@
 
 A Python tool for overlaying Ncode patterns and smartpen scribbles on PDFs.
 
+## ⚠️ Important: Two Different Approaches
+
+This tool has **two different functions** with **opposite requirements**:
+
+### 1. Ncode Overlay (ncode command)
+**Does NOT preserve PDF structure** - text becomes non-selectable
+- Uses full CMYK conversion with K=0 (like the original NeoLAB SDK)
+- Rasterizes the PDF at 600 DPI
+- **Required** for proper Ncode pen detection - the pen needs to distinguish Ncode dots (K=255) from background (K=0)
+
+### 2. Scribble Overlay (scribble command)  
+**DOES preserve PDF structure** - text remains selectable
+- Adds scribbles as transparent image overlays
+- Original PDF is not modified
+- Text remains fully searchable and selectable
+
 ## Features
 
-1. **Ncode Overlay**: Overlay Ncode pattern PNG images on PDFs (similar to the original NeoLAB Ncode SDK)
-   - Preserves text selectability - the original PDF content remains visible and searchable
-   - Supports auto-detection of Ncode PNG files using a prefix (e.g., `ncode_3_28_10_` finds `ncode_3_28_10_0.png`, `ncode_3_28_10_1.png`, etc.)
+1. **Ncode Overlay**: Overlay Ncode pattern PNGs on PDFs
+   - Follows original NeoLAB SDK's CMYK K-removal approach
+   - Auto-detection of PNG files using prefix (e.g., `ncode_3_28_10_`)
+   - ⚠️ **Text becomes non-selectable** (required for pen detection)
 
-2. **Scribble Overlay**: Overlay smartpen handwriting (scribble PDFs) on original PDFs with color control
-   - Preserves the background PDF structure (text remains selectable)
+2. **Scribble Overlay**: Overlay smartpen handwriting on original PDFs
+   - Preserves PDF structure - text remains selectable
    - Supports custom colors (default: red)
    - Adjustable opacity
 
@@ -23,249 +40,166 @@ pip install -e .
 
 ### Dependencies
 
-- **PyMuPDF** (fitz): Python binding for MuPDF - the same library used by the C++ Ncode SDK
-- **Pillow**: Image processing for Ncode PNG handling
-- **Click**: Command-line interface framework
+- **PyMuPDF** (fitz): Python binding for MuPDF
+- **Pillow**: Image processing
+- **Click**: CLI framework
 
 ## Usage
 
-### 1. Overlay Ncode Patterns on PDF
-
-#### Auto-detect Ncode PNGs with prefix (recommended)
-
-Like the original SDK, you can specify a prefix and it will automatically find the PNG files:
+### 1. Ncode Overlay (Rasterizes PDF, Text NOT Selectable)
 
 ```bash
-# Auto-detect ncode_3_28_10_0.png, ncode_3_28_10_1.png, etc.
+# Auto-detect with prefix
 pyncode ncode input.pdf output.pdf ncode_3_28_10_
+
+# Explicit PNG files
+pyncode ncode input.pdf output.pdf --pngs page0.png page1.png page2.png
+
+# Options
+pyncode ncode --help
 ```
 
-#### Specify explicit PNG files
+**⚠️ Warning**: This command rasterizes the PDF. Text will NOT remain selectable. This is **required** for proper Ncode pen detection.
 
-```bash
-pyncode ncode input.pdf output.pdf --pngs ncode_page1.png ncode_page2.png ncode_page3.png
-```
+**How it works:**
+1. Renders each PDF page to CMYK at 600 DPI
+2. For each pixel:
+   - If Ncode dot: CMYK = (0, 0, 0, 255) - pure black (K only)
+   - If background: CMYK = (255-R, 255-G, 255-B, 0) - no K component
+3. The pen sees only the K=255 dots, ignoring the K=0 background
 
-Options:
-- `--dpi, -d`: DPI of the PDF (default: 600)
-- `--ncode-dpi`: DPI of Ncode PNG images (default: 600)
-- `--num-pages, -n`: Number of pages (defaults to PDF page count)
-- `--pngs, -p`: Explicit PNG file paths (overrides prefix)
-
-**Requirements:**
-- Ncode PNGs should be 1-bit (black dots on white background)
-- PNGs are typically generated at 600 DPI by the Ncode SDK
-- The Ncode pattern is overlaid with transparent background - it won't obscure your PDF!
-
-### 2. Overlay Scribbles on PDF (with color control)
-
-Overlay smartpen handwriting on the original document:
+### 2. Scribble Overlay (Preserves PDF Structure, Text IS Selectable)
 
 ```bash
 # Default: red scribbles
 pyncode scribble document.pdf my_scribbles.pdf output.pdf
 
-# Custom color (blue)
+# Custom color
 pyncode scribble document.pdf my_scribbles.pdf output.pdf --color blue
 
 # Custom RGB color
-pyncode scribble document.pdf my_scribbles.pdf output.pdf --color "0,128,0"  # Green
+pyncode scribble document.pdf my_scribbles.pdf output.pdf --color "0,128,0"
 
 # Adjust opacity
 pyncode scribble document.pdf my_scribbles.pdf output.pdf --color red --opacity 0.8
+
+# Options
+pyncode scribble --help
 ```
 
-Options:
-- `--color, -c`: Scribble color (red, blue, green, black, or RGB triplet like "1,0,0")
-- `--opacity, -o`: Opacity (0.0-1.0, default: 1.0)
-
-**Important:**
-- The background PDF structure is preserved - text remains selectable!
-- Both PDFs should have the same number of pages (or it will use the minimum)
-- Scribble PDF should contain only the handwriting (transparent background)
-
-### 3. Simple Scribble Overlay (faster, no color transformation)
-
-```bash
-pyncode scribble-simple document.pdf my_scribbles.pdf output.pdf
-```
-
-This is faster but doesn't recolor the scribbles. Use when you don't need color transformation.
-
-## How It Works
-
-### Ncode Overlay
-
-The Ncode overlay function follows the principles of the NeoLAB Ncode SDK:
-
-1. Loads each Ncode PNG (1-bit pattern)
-2. Converts the white background to transparent
-3. Embeds the dots as a transparent overlay on each PDF page
-4. Preserves the original PDF content (text remains selectable)
-
-The original C SDK uses a more complex two-layer CMYK approach where:
-- The artwork layer has K=0 (no black ink)
-- The Ncode dots are pure K (black ink only)
-
-This Python implementation uses transparent PNG overlay which achieves the same visual result while preserving PDF structure and text selectability.
-
-### Scribble Overlay
-
-The scribble overlay function:
-
-1. Renders each scribble page to a high-resolution pixmap
-2. Applies color transformation (if specified)
-3. Overlays the result on the corresponding background page
-4. Preserves the background PDF structure
-
-**Why text remains selectable:**
-- The background PDF is not rasterized
-- Only the scribble layers are added as image overlays
-- The original text content and structure are preserved
+✅ **Text remains selectable** - the background PDF is not modified.
 
 ## Examples
 
-### Example 1: Process a multi-page document with Ncode
+### Example 1: Add Ncode to a Document
 
 ```bash
-# Generate Ncode PNGs using the official SDK (Windows only)
-# Or use the Go SDK on Linux
-
-# Then overlay them on your PDF with auto-detection
+# Generate Ncode PNGs using NeoLAB SDK or Go SDK
+# Then overlay on your PDF
 pyncode ncode my_document.pdf ncoded_document.pdf ncode_3_28_10_
 
-# Or with explicit files
-pyncode ncode my_document.pdf ncoded_document.pdf --pngs \
-  ncode_3_28_10_0.png \
-  ncode_3_28_10_1.png \
-  ncode_3_28_10_2.png
+# Note: ncoded_document.pdf will have Ncode dots, but text is not selectable
 ```
 
-### Example 2: Add handwritten notes to a document
+### Example 2: Add Handwritten Notes
 
 ```bash
-# Capture scribbles with your Neo smartpen
-# Export as PDF (this creates scribbles.pdf)
-
-# Overlay on the original document with red ink
+# Overlay scribbles on the ORIGINAL (non-ncoded) document
 pyncode scribble original_document.pdf scribbles.pdf annotated.pdf --color red
 
-# Or with blue ink and semi-transparent
-pyncode scribble original_document.pdf scribbles.pdf annotated.pdf --color blue --opacity 0.7
+# Now you can see your handwriting AND the text is still selectable!
 ```
 
-### Example 3: Batch processing
+### Example 3: Complete Workflow
 
 ```bash
 #!/bin/bash
-# Process all documents in a directory
+# 1. Add Ncode to document (for printing and pen use)
+pyncode ncode document.pdf ncoded.pdf ncode_3_28_10_
+echo "Print ncoded.pdf and use with Neo smartpen"
 
-for doc in documents/*.pdf; do
-    base=$(basename "$doc" .pdf)
-    
-    # Check if Ncode PNGs exist with prefix
-    if [ -f "ncode/${base}_0.png" ]; then
-        pyncode ncode "$doc" "ncoded/${base}.pdf" "ncode/${base}_"
-        echo "Ncoded: $base"
-    fi
-    
-    # Check if scribble PDF exists
-    if [ -f "scribbles/${base}_scribbles.pdf" ]; then
-        pyncode scribble "$doc" "scribbles/${base}_scribbles.pdf" "annotated/${base}.pdf" --color red
-        echo "Annotated: $base"
-    fi
-done
+# 2. After writing, overlay scribbles on original
+# (Keep original document with selectable text)
+pyncode scribble document.pdf scribbles.pdf annotated.pdf --color red
+
+# Result: annotated.pdf has your handwriting + selectable text
 ```
 
 ## Python API
 
-You can also use PyNcode as a Python library:
-
 ```python
 from pyncode.pyncode import create_ncoded_pdf, overlay_scribbles_with_color
 
-# Overlay Ncode patterns with auto-detection
+# Ncode overlay (rasterizes PDF)
 pages = create_ncoded_pdf(
     input_pdf='input.pdf',
-    ncode_pngs='ncode_3_28_10_',  # Prefix for auto-detection
+    ncode_pngs='ncode_3_28_10_',  # Prefix
     output_pdf='output.pdf',
-    dpi=600,
-    ncode_dpi=600
-)
-print(f"Processed {pages} pages")
-
-# Or with explicit PNG list
-pages = create_ncoded_pdf(
-    input_pdf='input.pdf',
-    ncode_pngs=['ncode1.png', 'ncode2.png'],
-    output_pdf='output.pdf'
+    dpi=600  # Standard Ncode DPI
 )
 
-# Overlay scribbles with custom color
+# Scribble overlay (preserves PDF)
 pages = overlay_scribbles_with_color(
     background_pdf='document.pdf',
     scribble_pdf='scribbles.pdf',
     output_pdf='annotated.pdf',
     scribble_color=(1.0, 0.0, 0.0),  # Red
-    scribble_opacity=1.0
+    scribble_opacity=0.8
 )
 ```
 
-## Compatibility
+## Why Ncode Requires K=0 Conversion
 
-- **Python**: 3.8+
-- **PyMuPDF**: 1.23.0+
-- **Operating Systems**: Linux, macOS, Windows
+The Neo smartpen uses an IR camera to detect the Ncode pattern. The algorithm works like this:
 
-## Limitations
+1. **Ncode dots** are printed as pure black (K=255 in CMYK)
+2. **Background** should have K=0 (no black ink)
+3. The pen's IR sensor sees K=255 (dots) vs K=0 (background)
 
-1. **Ncode Generation**: This tool only overlays existing Ncode PNGs. To generate Ncode patterns, you need:
-   - The official NeoLAB Ncode SDK (Windows only), or
-   - The Go SDK (`Ncode-SDK-for-Linux`) with Mono runtime
+If you don't set K=0 in the background:
+- Text and graphics also have K values
+- The pen can't distinguish Ncode dots from regular black text
+- Pen tracking fails
 
-2. **Ncode Recognition**: For best pen recognition:
-   - Use 600 DPI Ncode PNGs
-   - Ensure Ncode PNGs are properly generated by the SDK
-   - The transparent overlay approach may have slightly different recognition characteristics than the full CMYK two-layer approach
+This is why the Ncode overlay **must** rasterize and do the K=0 conversion - it's fundamental to how the pen works.
 
-3. **Scribble Color**: Color transformation works best on grayscale/black scribbles. Colored scribbles may not transform perfectly.
+## Workflow Recommendations
+
+### For Best Results:
+
+1. **Keep original PDF** - Always keep your original document with selectable text
+2. **Create Ncoded version for printing** - Use `ncode` command to make print-ready version
+3. **Capture scribbles** - Write on the printed Ncoded document with your Neo pen
+4. **Overlay scribbles on ORIGINAL** - Use `scribble` command to overlay on original (not Ncoded)
+   - This keeps text selectable
+   - You see both your handwriting and the original content
+
+### Why Not Overlay on Ncoded PDF?
+
+If you overlay scribbles on the Ncoded PDF:
+- The Ncoded PDF is already rasterized
+- Text is not selectable
+- You lose the ability to search/copy text
+
+Better workflow: Overlay on original, keep separate Ncoded version for printing.
 
 ## Troubleshooting
 
-### "Ncode completely obscures the PDF" (should be fixed now!)
-If this still happens, check that:
-- Your Ncode PNGs are properly formatted (black dots on white background)
-- The PNGs are being loaded correctly
-- Try updating to the latest version
+### "Pen doesn't recognize Ncode"
+- Ensure Ncode PNGs are generated at 600 DPI
+- Ensure PNGs are 1-bit (black dots on white)
+- Don't modify the Ncoded PDF after creation
 
-### "Page count mismatch" error
-Ensure both PDFs have the same number of pages. The tool will use the minimum if they differ, but this may cause issues.
+### "Text is not selectable"
+- This is **expected** for Ncode-overlayed PDFs
+- Use `scribble` command instead if you need selectable text
 
-### "Only found X Ncode PNGs" error
-Check that your PNG files exist and match the naming pattern:
-- If prefix is `ncode_3_28_10_`, it looks for `ncode_3_28_10_0.png`, `ncode_3_28_10_1.png`, etc.
-- File extensions `.png` and `.PNG` are both supported
-
-### Text not selectable after Ncode overlay
-This is unexpected - the tool is designed to preserve text selectability. If this occurs, check:
-- PyMuPDF version is up to date
-- The Ncode PNGs aren't too large (should match page dimensions)
-
-## Running Examples
-
-```bash
-# Quick start example with fake patterns
-python examples/quick_start.py
-
-# View CLI help
-pyncode --help
-pyncode ncode --help
-pyncode scribble --help
-```
+### "Only found X Ncode PNGs"
+- Check file naming: `prefix0.png`, `prefix1.png`, etc.
+- Both `.png` and `.PNG` extensions supported
 
 ## References
 
-- [NeoLAB Ncode SDK 2.0](https://github.com/NeoSmartpen/Ncode-SDK2.0) (Official Windows SDK)
-- [Ncode-SDK-for-Linux](https://github.com/Post-Math/Ncode-SDK-for-Linux) (Community Go SDK)
+- [NeoLAB Ncode SDK 2.0](https://github.com/NeoSmartpen/Ncode-SDK2.0)
+- [Ncode-SDK-for-Linux](https://github.com/Post-Math/Ncode-SDK-for-Linux)
 - [PyMuPDF Documentation](https://pymupdf.readthedocs.io/)
-- [MuPDF](https://mupdf.com/) - The underlying PDF rendering library
