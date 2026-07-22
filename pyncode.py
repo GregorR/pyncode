@@ -19,10 +19,97 @@ import glob
 from pathlib import Path
 from typing import Optional, Tuple, Union, List
 import io
+import multiprocessing
 
 import fitz  # PyMuPDF
 from PIL import Image
 import click
+
+
+def _process_single_page(args):
+    """
+    Process a single page for Ncode overlay.
+    
+    This function is designed to be picklable for multiprocessing.
+    
+    Args:
+        args: Tuple of (input_pdf_path, page_num, ncode_png_path, dpi)
+    
+    Returns:
+        Tuple of (page_num, img_data, page_width_pt, page_height_pt)
+    """
+    input_pdf_path, page_num, ncode_png_path, dpi = args
+    
+    # Load source page
+    src_doc = fitz.open(input_pdf_path)
+    src_page = src_doc[page_num]
+    
+    # Get page dimensions in points
+    page_rect = src_page.rect
+    page_width_pt = page_rect.width
+    page_height_pt = page_rect.height
+    
+    # Calculate scale: dpi / 72 (PDF is 72 DPI, we render at specified DPI)
+    scale = dpi / 72.0
+    
+    # Render page to RGB pixmap at the specified DPI
+    mat = fitz.Matrix(scale, scale)
+    pix_rgb = src_page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+    
+    width = pix_rgb.width
+    height = pix_rgb.height
+    
+    src_doc.close()
+    
+    # Load the Ncode PNG
+    ncode_img = Image.open(ncode_png_path)
+    
+    # Convert Ncode to 1-bit if needed
+    if ncode_img.mode != '1':
+        ncode_img = ncode_img.convert('L')
+        ncode_img = ncode_img.point(lambda x: 0 if x < 128 else 255, mode='1')
+    
+    ncode_width, ncode_height = ncode_img.size
+    
+    # Convert RGB pixmap to CMYK by creating new Pixmap with CMYK colorspace
+    pix_cmyk = fitz.Pixmap(fitz.csCMYK, pix_rgb)
+    
+    # Now modify the CMYK pixmap: set K=255 for dots, K=0 for background
+    # Access the raw samples data
+    samples = bytearray(pix_cmyk.samples)
+    
+    for y in range(height):
+        for x in range(width):
+            # Check if this pixel is an Ncode dot
+            # Scale coordinates to match Ncode image size
+            nx = int(x * ncode_width / width) if width > 0 else 0
+            ny = int(y * ncode_height / height) if height > 0 else 0
+            
+            # Check Ncode image (0 = dot, 255 = background)
+            is_dot = False
+            if nx < ncode_width and ny < ncode_height:
+                ncode_pixel = ncode_img.getpixel((nx, ny))
+                is_dot = (ncode_pixel == 0)
+            
+            if is_dot:
+                # Ncode dot: pure black (K only) - C=0, M=0, Y=0, K=255
+                idx = (y * width + x) * 4
+                samples[idx] = 0     # C
+                samples[idx + 1] = 0  # M
+                samples[idx + 2] = 0  # Y
+                samples[idx + 3] = 255  # K
+            else:
+                # Background: set K=0 (inverted RGB is already in C, M, Y)
+                idx = (y * width + x) * 4
+                samples[idx + 3] = 0  # K = 0
+    
+    # Create new pixmap from modified samples
+    pix_final = fitz.Pixmap(fitz.csCMYK, width, height, bytes(samples), False)
+    
+    # Save as PAM bytes (lossless format that supports CMYK)
+    img_data = pix_final.tobytes("pam")
+    
+    return (page_num, img_data, page_width_pt, page_height_pt)
 
 
 def find_ncode_pngs(prefix: str, num_pages: int) -> List[str]:
@@ -130,82 +217,45 @@ def create_ncoded_pdf(
     # Open MuPDF context and create output document
     ctx = fitz.open()
     
+    # Prepare arguments for parallel processing
+    page_args = [
+        (input_pdf, page_num, ncode_pngs_list[page_num], dpi)
+        for page_num in range(page_count)
+    ]
+    
+    # Get the number of CPU cores available
+    num_workers = multiprocessing.cpu_count()
+    
+    print(f"Processing {page_count} pages using {num_workers} CPU cores...")
+    
+    # Process pages in parallel
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    
+    results = [None] * page_count
+    
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        # Submit all tasks
+        future_to_page = {
+            executor.submit(_process_single_page, args): args[1]
+            for args in page_args
+        }
+        
+        # Collect results as they complete
+        completed = 0
+        for future in as_completed(future_to_page):
+            page_num = future_to_page[future]
+            try:
+                result = future.result()
+                results[page_num] = result
+                completed += 1
+                print(f"{completed}/{page_count} pages completed")
+            except Exception as e:
+                ctx.close()
+                raise RuntimeError(f"Error processing page {page_num}: {e}")
+    
+    # Reassemble the PDF from results (in order)
     for page_num in range(page_count):
-        print(f"{page_num+1}/{page_count}")
-
-        # Load source page
-        src_doc = fitz.open(input_pdf)
-        src_page = src_doc[page_num]
-        
-        # Get page dimensions in points
-        page_rect = src_page.rect
-        page_width_pt = page_rect.width
-        page_height_pt = page_rect.height
-        
-        # Calculate scale: dpi / 72 (PDF is 72 DPI, we render at specified DPI)
-        scale = dpi / 72.0
-        
-        # Render page to RGB pixmap at the specified DPI
-        mat = fitz.Matrix(scale, scale)
-        pix_rgb = src_page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-        
-        width = pix_rgb.width
-        height = pix_rgb.height
-        
-        # Load the Ncode PNG
-        png_path = ncode_pngs_list[page_num]
-        ncode_img = Image.open(png_path)
-        
-        # Convert Ncode to 1-bit if needed
-        if ncode_img.mode != '1':
-            ncode_img = ncode_img.convert('L')
-            ncode_img = ncode_img.point(lambda x: 0 if x < 128 else 255, mode='1')
-        
-        ncode_width, ncode_height = ncode_img.size
-        
-        # Convert RGB pixmap to CMYK by creating new Pixmap with CMYK colorspace
-        pix_cmyk = fitz.Pixmap(fitz.csCMYK, pix_rgb)
-        
-        # Now modify the CMYK pixmap: set K=255 for dots, K=0 for background
-        # Access the raw samples data
-        samples = bytearray(pix_cmyk.samples)
-        
-        for y in range(height):
-            for x in range(width):
-                # Check if this pixel is an Ncode dot
-                # Scale coordinates to match Ncode image size
-                nx = int(x * ncode_width / width) if width > 0 else 0
-                ny = int(y * ncode_height / height) if height > 0 else 0
-                
-                # Check Ncode image (0 = dot, 255 = background)
-                is_dot = False
-                if nx < ncode_width and ny < ncode_height:
-                    ncode_pixel = ncode_img.getpixel((nx, ny))
-                    is_dot = (ncode_pixel == 0)
-                
-                if is_dot:
-                    # Ncode dot: pure black (K only) - C=0, M=0, Y=0, K=255
-                    idx = (y * width + x) * 4
-                    samples[idx] = 0     # C
-                    samples[idx + 1] = 0  # M
-                    samples[idx + 2] = 0  # Y
-                    samples[idx + 3] = 255  # K
-                else:
-                    # Background: set K=0 (inverted RGB is already in C, M, Y)
-                    idx = (y * width + x) * 4
-                    samples[idx + 3] = 0  # K = 0
-        
-        # Create new pixmap from modified samples
-        # Copy the modified samples back to a new pixmap
-        # We need to create a new pixmap with the same dimensions and copy samples
-        
-        # Create a new CMYK pixmap from modified samples
-        # Constructor: Pixmap(colorspace, width, height, samples, alpha)
-        pix_final = fitz.Pixmap(fitz.csCMYK, width, height, bytes(samples), False)
-        
-        # Save as PAM bytes (lossless format that supports CMYK)
-        # PAM is supported by PDF and preserves the exact CMYK values
-        img_data = pix_final.tobytes("pam")
+        img_data, page_width_pt, page_height_pt = results[page_num]
         
         # Create a new page with the same dimensions
         new_page = ctx.new_page(width=page_width_pt, height=page_height_pt)
@@ -213,8 +263,6 @@ def create_ncoded_pdf(
         # Insert the CMYK image to fill the page
         rect = fitz.Rect(0, 0, page_width_pt, page_height_pt)
         new_page.insert_image(rect, stream=img_data)
-        
-        src_doc.close()
     
     # Save the output PDF
     ctx.save(output_pdf, garbage=4, deflate=True, clean=True)
