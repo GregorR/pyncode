@@ -345,7 +345,8 @@ def overlay_scribbles_simple(
     scribble_pdf: str,
     output_pdf: str,
     scribble_color: Tuple[float, float, float] = (1.0, 0.0, 0.0),
-    scribble_opacity: float = 1.0
+    scribble_opacity: float = 1.0,
+    page_map: Optional[str] = None
 ) -> int:
     """
     Simple scribble overlay using image insertion.
@@ -359,6 +360,8 @@ def overlay_scribbles_simple(
         output_pdf: Path to the output PDF
         scribble_color: Target RGB color (0.0-1.0 range)
         scribble_opacity: Opacity (0.0-1.0)
+        page_map: Optional string specifying which original pages to overlay.
+                 Format: "1,3-5,7" - same as overlay_scribbles_with_color
         
     Returns:
         Number of pages processed
@@ -366,14 +369,28 @@ def overlay_scribbles_simple(
     bg_doc = fitz.open(background_pdf)
     scribble_doc = fitz.open(scribble_pdf)
     
-    page_count = min(len(bg_doc), len(scribble_doc))
+    bg_page_count = len(bg_doc)
+    scribble_page_count = len(scribble_doc)
     
-    if page_count == 0:
-        raise ValueError("One or both PDFs have no pages")
+    # Determine page mapping
+    if page_map is not None:
+        # Use explicit page mapping
+        target_pages = parse_page_list(page_map, bg_page_count)
+        if len(target_pages) != scribble_page_count:
+            raise ValueError(
+                f"Page map specifies {len(target_pages)} pages but scribble PDF has {scribble_page_count} pages"
+            )
+    else:
+        # Default: map by position
+        page_count = min(bg_page_count, scribble_page_count)
+        target_pages = list(range(page_count))
     
-    for page_num in range(page_count):
-        bg_page = bg_doc[page_num]
-        scribble_page = scribble_doc[page_num]
+    if len(target_pages) == 0:
+        raise ValueError("No pages to process")
+    
+    for scribble_idx, bg_page_num in enumerate(target_pages):
+        bg_page = bg_doc[bg_page_num]
+        scribble_page = scribble_doc[scribble_idx]
         
         # Render scribble page to pixmap (preserves alpha channel)
         zoom = 2.0
@@ -409,12 +426,75 @@ def overlay_scribbles_simple(
     return page_count
 
 
+def parse_page_list(page_list_str: str, max_pages: int) -> List[int]:
+    """
+    Parse a page list string into a list of page numbers.
+    
+    Args:
+        page_list_str: String like "1,3-5,7,11,48-" representing page ranges
+                      - Single numbers: "1", "7", "11"
+                      - Ranges: "3-5" means 3, 4, 5
+                      - Open-ended: "48-" means 48 to max_pages
+        max_pages: Maximum page number (for open-ended ranges)
+    
+    Returns:
+        List of 0-indexed page numbers in order
+    
+    Examples:
+        parse_page_list("1,3-5,7", 10) -> [0, 2, 3, 4, 6]
+        parse_page_list("1,3-5,7,11,48-", 100) -> [0, 2, 3, 4, 6, 10, 47, 48, ..., 99]
+    """
+    pages = []
+    parts = page_list_str.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        
+        if '-' in part:
+            # Range
+            range_parts = part.split('-', 1)
+            start_str = range_parts[0].strip()
+            end_str = range_parts[1].strip() if len(range_parts) > 1 else None
+            
+            if not start_str:
+                raise ValueError(f"Invalid range: '{part}'")
+            
+            start = int(start_str)
+            if start < 1:
+                raise ValueError(f"Page numbers must be >= 1, got {start}")
+            
+            if end_str is None or end_str == '':
+                # Open-ended range (e.g., "48-")
+                end = max_pages
+            else:
+                end = int(end_str)
+            
+            if end < start:
+                raise ValueError(f"Invalid range: {start}-{end}")
+            if end > max_pages:
+                end = max_pages
+            
+            pages.extend(range(start, end + 1))
+        else:
+            # Single page
+            page_num = int(part)
+            if page_num < 1:
+                raise ValueError(f"Page numbers must be >= 1, got {page_num}")
+            pages.append(page_num)
+    
+    # Convert to 0-indexed
+    return [p - 1 for p in pages]
+
+
 def overlay_scribbles_with_color(
     background_pdf: str,
     scribble_pdf: str,
     output_pdf: str,
     scribble_color: Tuple[float, float, float] = (1.0, 0.0, 0.0),
-    scribble_opacity: float = 1.0
+    scribble_opacity: float = 1.0,
+    page_map: Optional[str] = None
 ) -> int:
     """
     Overlay scribbles with color transformation.
@@ -429,6 +509,15 @@ def overlay_scribbles_with_color(
         output_pdf: Path to the output PDF
         scribble_color: Target RGB color (0.0-1.0 range, default: red)
         scribble_opacity: Opacity (0.0-1.0, default: 1.0)
+        page_map: Optional string specifying which original pages to overlay.
+                 Format: "1,3-5,7,11,48-" where numbers are 1-indexed original page numbers.
+                 Scribble pages are mapped in order to these original pages.
+                 Example: "1,3-5,7" with 5 scribble pages means:
+                 - Scribble page 1 -> Original page 1
+                 - Scribble page 2 -> Original page 3
+                 - Scribble page 3 -> Original page 4
+                 - Scribble page 4 -> Original page 5
+                 - Scribble page 5 -> Original page 7
         
     Returns:
         Number of pages processed
@@ -436,16 +525,30 @@ def overlay_scribbles_with_color(
     bg_doc = fitz.open(background_pdf)
     scribble_doc = fitz.open(scribble_pdf)
     
-    page_count = min(len(bg_doc), len(scribble_doc))
+    bg_page_count = len(bg_doc)
+    scribble_page_count = len(scribble_doc)
     
-    if page_count == 0:
+    # Determine page mapping
+    if page_map is not None:
+        # Use explicit page mapping
+        target_pages = parse_page_list(page_map, bg_page_count)
+        if len(target_pages) != scribble_page_count:
+            raise ValueError(
+                f"Page map specifies {len(target_pages)} pages but scribble PDF has {scribble_page_count} pages"
+            )
+    else:
+        # Default: map by position (first scribble page to first background page, etc.)
+        page_count = min(bg_page_count, scribble_page_count)
+        target_pages = list(range(page_count))
+    
+    if len(target_pages) == 0:
         bg_doc.close()
         scribble_doc.close()
-        raise ValueError("One or both PDFs have no pages")
+        raise ValueError("No pages to process")
     
-    for page_num in range(page_count):
-        bg_page = bg_doc[page_num]
-        scribble_page = scribble_doc[page_num]
+    for scribble_idx, bg_page_num in enumerate(target_pages):
+        bg_page = bg_doc[bg_page_num]
+        scribble_page = scribble_doc[scribble_idx]
         
         # Render scribble page with alpha channel
         zoom = 2.0
@@ -597,12 +700,17 @@ def ncode(
               help='Scribble color: red, blue, green, black, or RGB triplet')
 @click.option('--opacity', '-o', default=1.0, type=float,
               help='Scribble opacity (0.0-1.0, default: 1.0)')
+@click.option('--pages', '-p', type=str, default=None,
+              help='Page mapping: comma-separated list of original page numbers. '
+                   'Format: "1,3-5,7,11,48-" where 48- means 48 to end. '
+                   'Scribble pages are mapped in order to these pages.')
 def scribble(
     background_pdf: str,
     scribble_pdf: str,
     output_pdf: str,
     color: str,
-    opacity: float
+    opacity: float,
+    pages: str
 ):
     """Overlay scribble PDF on background PDF (preserves text selectability).
     
@@ -613,6 +721,11 @@ def scribble(
     OUTPUT_PDF: Path to the output merged PDF
     
     The background PDF structure is preserved - text remains selectable!
+    
+    The --pages option lets you specify which original pages to overlay.
+    This is useful when the scribble PDF doesn't have all pages (e.g., you
+    only wrote on pages 1, 3, 5, 7). Format: "1,3-5,7,11,48-"
+    where 48- means page 48 to the end. Scribble pages are mapped in order.
     """
     scribble_color = (1.0, 0.0, 0.0)
     
@@ -649,16 +762,19 @@ def scribble(
         raise click.Abort()
     
     try:
-        pages = overlay_scribbles_with_color(
+        page_count = overlay_scribbles_with_color(
             background_pdf,
             scribble_pdf,
             output_pdf,
             scribble_color=scribble_color,
-            scribble_opacity=opacity
+            scribble_opacity=opacity,
+            page_map=pages
         )
         color_str = f"{int(scribble_color[0]*255)},{int(scribble_color[1]*255)},{int(scribble_color[2]*255)}"
-        click.echo(f"Successfully overlaid scribbles on {pages} pages → {output_pdf}")
+        click.echo(f"Successfully overlaid scribbles on {page_count} pages → {output_pdf}")
         click.echo(f"  Color: {color_str}, Opacity: {opacity}")
+        if pages is not None:
+            click.echo(f"  Page mapping: {pages}")
         click.echo("  Background PDF structure preserved - text is selectable!")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -671,25 +787,35 @@ def scribble(
 @click.argument('output_pdf', type=click.Path())
 @click.option('--opacity', '-o', default=1.0, type=float,
               help='Scribble opacity (0.0-1.0, default: 1.0)')
+@click.option('--pages', '-p', type=str, default=None,
+              help='Page mapping: comma-separated list of original page numbers. '
+                   'Format: "1,3-5,7" - same as scribble command.')
 def scribble_simple(
     background_pdf: str,
     scribble_pdf: str,
     output_pdf: str,
-    opacity: float
+    opacity: float,
+    pages: str
 ):
-    """Simple scribble overlay (no color transformation, faster)."""
+    """Simple scribble overlay (no color transformation, faster).
+    
+    Same page mapping syntax as the scribble command: --pages "1,3-5,7"
+    """
     if opacity < 0.0 or opacity > 1.0:
         click.echo("Error: Opacity must be between 0.0 and 1.0", err=True)
         raise click.Abort()
     
     try:
-        pages = overlay_scribbles_simple(
+        page_count = overlay_scribbles_simple(
             background_pdf,
             scribble_pdf,
             output_pdf,
-            scribble_opacity=opacity
+            scribble_opacity=opacity,
+            page_map=pages
         )
-        click.echo(f"Successfully overlaid scribbles on {pages} pages → {output_pdf}")
+        click.echo(f"Successfully overlaid scribbles on {page_count} pages → {output_pdf}")
+        if pages is not None:
+            click.echo(f"  Page mapping: {pages}")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()

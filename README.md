@@ -72,7 +72,7 @@ pyncode ncode --help
 ### 2. Scribble Overlay (Preserves PDF Structure, Text IS Selectable)
 
 ```bash
-# Default: red scribbles
+# Default: red scribbles (sequential page mapping)
 pyncode scribble document.pdf my_scribbles.pdf output.pdf
 
 # Custom color
@@ -84,11 +84,34 @@ pyncode scribble document.pdf my_scribbles.pdf output.pdf --color "0,128,0"
 # Adjust opacity
 pyncode scribble document.pdf my_scribbles.pdf output.pdf --color red --opacity 0.8
 
+# Specify which original pages to overlay (for incomplete scribble exports)
+# If scribble PDF has pages for original pages 1, 3, 5, 7:
+pyncode scribble document.pdf my_scribbles.pdf output.pdf --pages "1,3,5,7"
+
+# Use ranges and open-ended ranges
+# If scribble PDF has pages for original pages 1, 3-5, 7-10:
+pyncode scribble document.pdf my_scribbles.pdf output.pdf --pages "1,3-5,7-10"
+
+# If scribble PDF has pages starting from page 48 to the end:
+pyncode scribble document.pdf my_scribbles.pdf output.pdf --pages "48-"
+
 # Options
 pyncode scribble --help
 ```
 
 ✅ **Text remains selectable** - the background PDF is not modified.
+
+### 3. Simple Scribble Overlay (faster, no color transformation)
+
+```bash
+# Default mapping
+pyncode scribble-simple document.pdf my_scribbles.pdf output.pdf
+
+# With page mapping
+pyncode scribble-simple document.pdf my_scribbles.pdf output.pdf --pages "1,3-5,7"
+```
+
+Faster than `scribble` because it doesn't recolor - just overlays as-is.
 
 ## Examples
 
