@@ -451,32 +451,42 @@ def overlay_scribbles_with_color(
         zoom = 2.0
         pix = scribble_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
         
+        # Convert to PIL Image for proper alpha handling
+        # PIL handles RGBA images correctly
+        pil_img = pix.pil_image()
+        
+        # Convert to RGBA to ensure we have an alpha channel
+        if pil_img.mode != 'RGBA':
+            pil_img = pil_img.convert('RGBA')
+        
         # Replace RGB values with target color while preserving alpha
         target_r = int(scribble_color[0] * 255)
         target_g = int(scribble_color[1] * 255)
         target_b = int(scribble_color[2] * 255)
         
-        # Get samples as bytearray (RGBA format: R,G,B,A per pixel)
-        samples = bytearray(pix.samples)
+        # Modify pixels using PIL (proper alpha handling)
+        pixels = pil_img.load()
+        width, height = pil_img.size
         
-        # Replace RGB values for each pixel, keep alpha
-        # Each pixel is 4 bytes: R, G, B, A
-        for i in range(0, len(samples), 4):
-            samples[i] = target_r     # R
-            samples[i + 1] = target_g  # G
-            samples[i + 2] = target_b  # B
-            # samples[i + 3] is alpha, keep unchanged
+        for y in range(height):
+            for x in range(width):
+                r, g, b, a = pixels[x, y]
+                if a > 0:  # Only modify non-transparent pixels
+                    pixels[x, y] = (target_r, target_g, target_b, a)
         
         # Apply opacity to alpha channel
         if scribble_opacity < 1.0:
-            for i in range(3, len(samples), 4):  # Alpha bytes at indices 3, 7, 11, ...
-                samples[i] = int(samples[i] * scribble_opacity)
+            pixels = pil_img.load()
+            for y in range(height):
+                for x in range(width):
+                    r, g, b, a = pixels[x, y]
+                    a = int(a * scribble_opacity)
+                    pixels[x, y] = (r, g, b, a)
         
-        # Create new pixmap with modified samples
-        rgba_pix = fitz.Pixmap(pix.colorspace, pix.width, pix.height, bytes(samples), True)
-        
-        # Convert to image bytes
-        img_bytes = rgba_pix.tobytes("png")
+        # Convert to PNG bytes using PIL (proper alpha preservation)
+        img_buffer = io.BytesIO()
+        pil_img.save(img_buffer, format='PNG')
+        img_bytes = img_buffer.getvalue()
         
         # Insert on background page
         scribble_rect = scribble_page.rect
