@@ -133,6 +133,8 @@ def create_ncoded_pdf(
     ctx = fitz.open()
     
     for page_num in range(page_count):
+        print(f"{page_num+1}/{page_count}")
+
         # Load source page
         src_doc = fitz.open(input_pdf)
         src_page = src_doc[page_num]
