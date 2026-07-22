@@ -5,7 +5,7 @@ Quick Start Example for PyNcode
 This example demonstrates:
 1. Creating a simple PDF with text
 2. Generating fake Ncode pattern PNGs
-3. Overlaying Ncode patterns on the PDF
+3. Overlaying Ncode patterns on the PDF (with auto-detection)
 4. Creating fake scribble PDFs
 5. Overlaying scribbles with custom colors
 """
@@ -119,27 +119,27 @@ def main():
         doc.close()
         print(f"   Created: {sample_pdf}")
         
-        # Step 2: Create fake Ncode PNGs
+        # Step 2: Create fake Ncode PNGs with a prefix
         print("\n2. Creating fake Ncode PNGs...")
-        ncode_pngs = []
+        ncode_prefix = str(tmpdir / "ncode_3_28_10_")
         for i in range(3):
-            png_path = tmpdir / f"ncode_page{i+1}.png"
-            create_fake_ncode_png(str(png_path))
-            ncode_pngs.append(str(png_path))
+            png_path = f"{ncode_prefix}{i}.png"
+            create_fake_ncode_png(png_path, size=(600, 800))  # Smaller for demo
             print(f"   Created: {png_path}")
         
-        # Step 3: Overlay Ncode on the PDF
-        print("\n3. Overlaying Ncode patterns...")
-        from pyncode import create_ncoded_pdf
+        # Step 3: Overlay Ncode on the PDF using auto-detection
+        print("\n3. Overlaying Ncode patterns (auto-detect)...")
+        from pyncode.pyncode import create_ncoded_pdf
         
         ncoded_pdf = tmpdir / "ncoded.pdf"
         pages = create_ncoded_pdf(
             str(sample_pdf),
-            ncode_pngs,
+            ncode_prefix,  # Pass prefix for auto-detection
             str(ncoded_pdf)
         )
         print(f"   Created: {ncoded_pdf}")
         print(f"   Processed {pages} pages")
+        print("   Note: The Ncode pattern is visible but doesn't obscure the text!")
         
         # Step 4: Create scribble PDF
         print("\n4. Creating scribble PDF...")
@@ -151,7 +151,7 @@ def main():
         
         # Step 5: Overlay scribbles with red color
         print("\n5. Overlaying scribbles (red)...")
-        from pyncode import overlay_scribbles_with_color
+        from pyncode.pyncode import overlay_scribbles_with_color
         
         annotated_pdf = tmpdir / "annotated.pdf"
         pages = overlay_scribbles_with_color(
@@ -161,7 +161,7 @@ def main():
             scribble_color=(1.0, 0.0, 0.0),  # Red
             scribble_opacity=0.8
         )
-        print(f"   Created: {annotated_pdf}")
+        print(f"   Created: {annotated.pdf}")
         print(f"   Processed {pages} pages")
         
         # Step 6: Create another version with blue scribbles
@@ -179,7 +179,7 @@ def main():
         # Summary
         print("\n" + "=" * 60)
         print("Files created:")
-        for f in tmpdir.glob("*.pdf"):
+        for f in sorted(tmpdir.glob("*.pdf")):
             size = f.stat().st_size
             print(f"  - {f.name}: {size:,} bytes")
         print("\n" + "=" * 60)
@@ -187,7 +187,7 @@ def main():
         print("The Neo smartpen won't recognize them. For real Ncode, use the")
         print("official Ncode SDK or the Go SDK (Ncode-SDK-for-Linux).")
         print("\nTo use with real Ncode patterns:")
-        print("  pyncode ncode input.pdf output.pdf ncode_1.png ncode_2.png ...")
+        print("  pyncode ncode input.pdf output.pdf ncode_3_28_10_")
         print("\nTo overlay real scribbles:")
         print("  pyncode scribble document.pdf scribbles.pdf output.pdf --color red")
 

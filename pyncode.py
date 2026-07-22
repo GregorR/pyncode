@@ -15,8 +15,9 @@ import os
 import sys
 import tempfile
 import shutil
+import glob
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 import io
 
 import fitz  # PyMuPDF
@@ -26,60 +27,103 @@ import click
 
 def load_ncode_png(png_path: str, dpi: int = 600) -> Tuple[bytes, int, int]:
     """
-    Load an Ncode PNG image and return it as TIFF data suitable for PDF embedding.
+    Load an Ncode PNG image and return it with transparent background.
     
     Ncode PNGs are 1-bit (black dots on white background). For proper Ncode overlay,
-    the image needs to be converted to a format that can be used as an ImageMask.
+    the white background must be made transparent so it doesn't obscure the PDF.
     
     Args:
         png_path: Path to the Ncode PNG file
         dpi: DPI of the Ncode image (default: 600)
         
     Returns:
-        Tuple of (TIFF data bytes, width, height)
+        Tuple of (PNG data bytes with transparency, width, height)
     """
     img = Image.open(png_path)
     
-    # Convert to 1-bit if not already
-    if img.mode != '1':
-        # Threshold: darker than mid-gray becomes black (dot), lighter becomes white (background)
-        img = img.convert('L')  # grayscale
-        img = img.point(lambda x: 0 if x < 128 else 255, mode='1')
+    # Convert to RGBA if not already
+    if img.mode != 'RGBA':
+        if img.mode == '1':
+            # 1-bit image - convert to RGBA with transparency
+            img = img.convert('L')  # grayscale first
+        elif img.mode != 'L':
+            img = img.convert('L')  # grayscale
+        
+        # Now create RGBA with transparency
+        # White/light pixels become transparent, dark pixels (dots) stay opaque
+        img_rgba = Image.new('RGBA', img.size)
+        for x in range(img.width):
+            for y in range(img.height):
+                gray = img.getpixel((x, y))
+                if gray < 128:
+                    # Black dot - keep opaque black
+                    img_rgba.putpixel((x, y), (0, 0, 0, 255))
+                else:
+                    # White background - make fully transparent
+                    img_rgba.putpixel((x, y), (0, 0, 0, 0))
+        img = img_rgba
     
     width, height = img.size
     
-    # Save to TIFF in memory (lossless format for 1-bit images)
-    tiff_buffer = io.BytesIO()
-    img.save(tiff_buffer, format='TIFF', compression='tiff_ccitt')
-    tiff_data = tiff_buffer.getvalue()
+    # Save to PNG in memory with transparency
+    png_buffer = io.BytesIO()
+    img.save(png_buffer, format='PNG')
+    png_data = png_buffer.getvalue()
     
-    return tiff_data, width, height
+    return png_data, width, height
+
+
+def find_ncode_pngs(prefix: str, num_pages: int) -> List[str]:
+    """
+    Find Ncode PNG files matching a prefix pattern.
+    
+    Looks for files named like: prefix0.png, prefix1.png, prefix2.png, etc.
+    
+    Args:
+        prefix: The file prefix (e.g., 'ncode_3_28_10_' for ncode_3_28_10_0.png)
+        num_pages: Number of pages to find PNGs for
+        
+    Returns:
+        List of PNG file paths in order
+    """
+    png_files = []
+    for i in range(num_pages):
+        png_path = f"{prefix}{i}.png"
+        if os.path.exists(png_path):
+            png_files.append(png_path)
+        else:
+            # Try with different extensions
+            for ext in ['.png', '.PNG']:
+                alt_path = f"{prefix}{i}{ext}"
+                if os.path.exists(alt_path):
+                    png_files.append(alt_path)
+                    break
+    
+    return png_files
 
 
 def create_ncoded_pdf(
     input_pdf: str,
-    ncode_pngs: list,
+    ncode_pngs: Union[List[str], str],
     output_pdf: str,
     dpi: int = 600,
-    ncode_dpi: int = 600
+    ncode_dpi: int = 600,
+    auto_detect: bool = True
 ) -> int:
     """
     Overlay Ncode patterns (PNG images) on a PDF, following the NeoLAB Ncode SDK approach.
     
-    The Ncode overlay uses a two-layer approach:
-    1. The original PDF content is preserved (text remains selectable)
-    2. Ncode pattern is overlaid as a 1-bit image mask
-    
-    This differs from the full CMYK conversion approach used by the C SDK. Instead,
-    we use a simpler method that preserves PDF structure: the Ncode PNG is added
-    as an overlay image on each page.
+    The Ncode overlay preserves the original PDF content - text remains selectable.
+    Ncode dots are overlaid as a transparent PNG where only the black dots are visible.
     
     Args:
         input_pdf: Path to the input PDF
-        ncode_pngs: List of paths to Ncode PNG images (one per page)
+        ncode_pngs: Either a list of PNG paths OR a prefix string for auto-detection
+                   If a prefix, looks for prefix0.png, prefix1.png, etc.
         output_pdf: Path to the output PDF
         dpi: DPI for rendering (used for coordinate calculations)
         ncode_dpi: DPI of the Ncode PNG images (default: 600)
+        auto_detect: If True and ncode_pngs is a string, auto-detect PNG files
         
     Returns:
         Number of pages processed
@@ -92,34 +136,52 @@ def create_ncoded_pdf(
     if not input_path.exists():
         raise FileNotFoundError(f"Input PDF not found: {input_pdf}")
     
+    # Open the input PDF to get page count
+    doc = fitz.open(input_pdf)
+    page_count = len(doc)
+    doc.close()
+    
+    # Handle ncode_pngs parameter
+    if isinstance(ncode_pngs, str):
+        # It's a prefix - auto-detect PNG files
+        if auto_detect:
+            ncode_pngs_list = find_ncode_pngs(ncode_pngs, page_count)
+            if len(ncode_pngs_list) < page_count:
+                raise ValueError(
+                    f"Only found {len(ncode_pngs_list)} Ncode PNGs for {page_count} pages. "
+                    f"Looking for: {ncode_pngs}0.png, {ncode_pngs}1.png, ..."
+                )
+        else:
+            raise ValueError("ncode_pngs must be a list when auto_detect=False")
+    else:
+        ncode_pngs_list = list(ncode_pngs)
+    
     # Verify all Ncode PNGs exist
-    for png_path in ncode_pngs:
+    for png_path in ncode_pngs_list:
         if not Path(png_path).exists():
             raise FileNotFoundError(f"Ncode PNG not found: {png_path}")
     
-    # Open the input PDF
-    doc = fitz.open(input_pdf)
-    page_count = len(doc)
-    
-    if len(ncode_pngs) != page_count:
-        doc.close()
+    if len(ncode_pngs_list) != page_count:
         raise ValueError(
             f"Page count mismatch: PDF has {page_count} pages, "
-            f"but {len(ncode_pngs)} Ncode PNGs provided"
+            f"but {len(ncode_pngs_list)} Ncode PNGs provided"
         )
+    
+    # Open the input PDF for modification
+    doc = fitz.open(input_pdf)
     
     # Process each page
     for page_num in range(page_count):
         page = doc[page_num]
-        png_path = ncode_pngs[page_num]
+        png_path = ncode_pngs_list[page_num]
         
         # Get page dimensions in points (PDF coordinate system)
         page_rect = page.rect
         page_width = page_rect.width
         page_height = page_rect.height
         
-        # Load the Ncode PNG
-        img_data, img_width, img_height = load_ncode_png(png_path, ncode_dpi)
+        # Load the Ncode PNG with transparent background
+        png_data, img_width, img_height = load_ncode_png(png_path, ncode_dpi)
         
         # Calculate the size to draw the Ncode image
         # Ncode images are typically at 600 DPI, PDF is 72 DPI
@@ -127,15 +189,26 @@ def create_ncoded_pdf(
         ncode_width_pt = img_width * 72 / ncode_dpi
         ncode_height_pt = img_height * 72 / ncode_dpi
         
+        # Calculate scale factor to fit the Ncode image to the page
+        # Ncode images should cover the entire page
+        scale_x = page_width / ncode_width_pt
+        scale_y = page_height / ncode_height_pt
+        scale = min(scale_x, scale_y)
+        
+        # Center the Ncode image on the page
+        scaled_width = ncode_width_pt * scale
+        scaled_height = ncode_height_pt * scale
+        x_offset = (page_width - scaled_width) / 2
+        y_offset = (page_height - scaled_height) / 2
+        
         # Create image insertion parameters
-        # Position at top-left (0, 0) of the page
-        rect = fitz.Rect(0, 0, ncode_width_pt, ncode_height_pt)
+        rect = fitz.Rect(x_offset, y_offset, x_offset + scaled_width, y_offset + scaled_height)
         
         # Insert the image as an overlay (over the existing content)
-        # The image will be rendered with its actual pixels
+        # The transparent background won't obscure the PDF
         page.insert_image(
             rect,
-            stream=img_data,
+            stream=png_data,
             overlay=True  # Draw on top of existing content
         )
     
@@ -247,11 +320,6 @@ def create_scribble_overlay_pdf(
             overlay=True,
             opacity=scribble_opacity
         )
-        
-        # Note: PyMuPDF's insert_image doesn't directly support color transformation
-        # The color is typically handled by the rendering or post-processing
-        # For true color recoloring of vector paths, a different approach would be needed
-        # But for rasterized handwriting, the color should be preserved from the render
     
     # Save the output PDF
     bg_doc.save(
@@ -292,59 +360,13 @@ def create_scribble_overlay_pdf_vector(
     Returns:
         Number of pages in the output PDF
     """
-    bg_path = Path(background_pdf)
-    scribble_path = Path(scribble_pdf)
-    
-    if not bg_path.exists():
-        raise FileNotFoundError(f"Background PDF not found: {background_pdf}")
-    if not scribble_path.exists():
-        raise FileNotFoundError(f"Scribble PDF not found: {scribble_pdf}")
-    
-    bg_doc = fitz.open(background_pdf)
-    scribble_doc = fitz.open(scribble_pdf)
-    
-    page_count = min(len(bg_doc), len(scribble_doc))
-    
-    if page_count == 0:
-        bg_doc.close()
-        scribble_doc.close()
-        raise ValueError("One or both PDFs have no pages")
-    
-    # Create a color matrix for recoloring (for grayscale/black strokes)
-    # This transforms all colors to the target color
-    color_matrix = fitz.Matrix(
-        scribble_color[0], scribble_color[1], scribble_color[2],
-        scribble_color[0], scribble_color[1], scribble_color[2],
-        scribble_color[0], scribble_color[1], scribble_color[2]
+    # Note: The vector overlay method is experimental.
+    # For best results, use overlay_scribbles_simple or overlay_scribbles_with_color
+    # which use rasterized overlay for better compatibility.
+    raise NotImplementedError(
+        "Vector overlay is not yet implemented. "
+        "Please use overlay_scribbles_simple or overlay_scribbles_with_color instead."
     )
-    
-    for page_num in range(page_count):
-        bg_page = bg_doc[page_num]
-        scribble_page = scribble_doc[page_num]
-        
-        # Get scribble page dimensions
-        scribble_rect = scribble_page.rect
-        
-        # Insert the scribble page as a PDF annotation/overlay
-        # This preserves vector data
-        page_point = fitz.Point(0, 0)  # Top-left corner
-        
-        # Note: The vector overlay method is experimental.
-        # For best results, use overlay_scribbles_simple or overlay_scribbles_with_color
-        # which use rasterized overlay for better compatibility.
-        pass  # Placeholder - vector overlay requires more complex handling
-    
-    bg_doc.save(
-        output_pdf,
-        garbage=4,
-        deflate=True,
-        clean=True
-    )
-    
-    bg_doc.close()
-    scribble_doc.close()
-    
-    return page_count
 
 
 # Simplified vector overlay that actually works with PyMuPDF
@@ -501,15 +523,21 @@ def cli():
 @cli.command()
 @click.argument('input_pdf', type=click.Path(exists=True))
 @click.argument('output_pdf', type=click.Path())
-@click.argument('ncode_pngs', nargs=-1, type=click.Path(exists=True))
+@click.argument('ncode_prefix', type=str, default='')
+@click.option('--pngs', '-p', multiple=True, type=click.Path(exists=True),
+              help='Explicit PNG file paths (overrides prefix)')
 @click.option('--dpi', '-d', default=600, help='DPI of the PDF (default: 600)')
 @click.option('--ncode-dpi', default=600, help='DPI of Ncode PNG images (default: 600)')
+@click.option('--num-pages', '-n', type=int, default=None,
+              help='Number of pages (defaults to PDF page count)')
 def ncode(
     input_pdf: str,
     output_pdf: str,
-    ncode_pngs: Tuple[str, ...],
+    ncode_prefix: str,
+    pngs: Tuple[str, ...],
     dpi: int,
-    ncode_dpi: int
+    ncode_dpi: int,
+    num_pages: int
 ):
     """Overlay Ncode PNG patterns on a PDF.
     
@@ -517,19 +545,51 @@ def ncode(
     
     OUTPUT_PDF: Path to the output PDF with Ncode overlay
     
-    NCODE_PNGS: One or more Ncode PNG images (one per page, in order)
+    NCODE_PREFIX: Optional prefix for auto-detecting PNG files.
+                  Looks for prefix0.png, prefix1.png, etc.
+                  If provided with --pngs, --pngs takes precedence.
     
-    Example:
-        pyncode ncode input.pdf output.pdf ncode_1.png ncode_2.png ncode_3.png
+    Examples:
+        # Auto-detect with prefix (like the original SDK)
+        pyncode ncode input.pdf output.pdf ncode_3_28_10_
+        
+        # Explicit PNG files
+        pyncode ncode input.pdf output.pdf --pngs page0.png page1.png page2.png
+        
+        # Combined (explicit PNGs take precedence)
+        pyncode ncode input.pdf output.pdf ncode_ --pngs custom1.png custom2.png
     """
-    if len(ncode_pngs) == 0:
-        click.echo("Error: At least one Ncode PNG is required", err=True)
+    # Determine which PNG files to use
+    if pngs:
+        # Explicit PNGs provided
+        ncode_pngs_list = list(pngs)
+    elif ncode_prefix:
+        # Use prefix for auto-detection
+        if num_pages is None:
+            # Get page count from PDF
+            doc = fitz.open(input_pdf)
+            num_pages = len(doc)
+            doc.close()
+        
+        ncode_pngs_list = find_ncode_pngs(ncode_prefix, num_pages)
+        if len(ncode_pngs_list) < num_pages:
+            click.echo(
+                f"Error: Only found {len(ncode_pngs_list)} Ncode PNGs for {num_pages} pages.",
+                err=True
+            )
+            click.echo(f"Looking for: {ncode_prefix}0.png, {ncode_prefix}1.png, ...", err=True)
+            raise click.Abort()
+    else:
+        click.echo(
+            "Error: Either provide NCODE_PREFIX or use --pngs to specify PNG files",
+            err=True
+        )
         raise click.Abort()
     
     try:
         pages = create_ncoded_pdf(
             input_pdf,
-            list(ncode_pngs),
+            ncode_pngs_list,
             output_pdf,
             dpi=dpi,
             ncode_dpi=ncode_dpi
