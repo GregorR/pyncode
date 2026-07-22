@@ -37,6 +37,7 @@ def _process_single_page(args):
     
     Returns:
         Tuple of (page_num, img_data, page_width_pt, page_height_pt)
+        Note: page_num is returned for debugging/logging purposes
     """
     input_pdf_path, page_num, ncode_png_path, dpi = args
     
@@ -255,7 +256,7 @@ def create_ncoded_pdf(
     
     # Reassemble the PDF from results (in order)
     for page_num in range(page_count):
-        img_data, page_width_pt, page_height_pt = results[page_num]
+        _, img_data, page_width_pt, page_height_pt = results[page_num]
         
         # Create a new page with the same dimensions
         new_page = ctx.new_page(width=page_width_pt, height=page_height_pt)
