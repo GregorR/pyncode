@@ -451,40 +451,29 @@ def overlay_scribbles_with_color(
         zoom = 2.0
         pix = scribble_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
         
-        # Extract alpha channel and create new RGB pixmap with target color
-        # Use the alpha channel as a mask for the target color
+        # Replace RGB values with target color while preserving alpha
         target_r = int(scribble_color[0] * 255)
         target_g = int(scribble_color[1] * 255)
         target_b = int(scribble_color[2] * 255)
         
-        # Get the alpha channel as a separate pixmap
-        pix_alpha = fitz.Pixmap(None, pix)  # Extract alpha only
+        # Get samples as bytearray (RGBA format: R,G,B,A per pixel)
+        samples = bytearray(pix.samples)
         
-        # Create new RGB pixmap with target color (alpha will be added separately)
-        rgb_pix = fitz.Pixmap(fitz.csRGB, pix.width, pix.height, 0)
-        
-        # Fill with target color
-        rgb_pix.set_rect(rgb_pix.irect, (target_r, target_g, target_b))
-        
-        # Combine with alpha channel by creating RGB pixmap with alpha
-        # First get the samples, then merge alpha
-        samples_rgb = bytearray(rgb_pix.samples)
-        samples_alpha = bytearray(pix_alpha.samples)
-        
-        # Create RGBA samples (RGB + alpha for each pixel)
-        samples_rgba = bytearray()
-        for i in range(len(samples_alpha)):
-            samples_rgba.extend([samples_rgb[i*3], samples_rgb[i*3+1], samples_rgb[i*3+2], samples_alpha[i]])
-        
-        rgba_pix = fitz.Pixmap(fitz.csRGB, pix.width, pix.height, bytes(samples_rgba), True)
+        # Replace RGB values for each pixel, keep alpha
+        # Each pixel is 4 bytes: R, G, B, A
+        for i in range(0, len(samples), 4):
+            samples[i] = target_r     # R
+            samples[i + 1] = target_g  # G
+            samples[i + 2] = target_b  # B
+            # samples[i + 3] is alpha, keep unchanged
         
         # Apply opacity to alpha channel
         if scribble_opacity < 1.0:
-            samples = bytearray(rgba_pix.samples)
-            # Alpha is at indices 3, 7, 11, ... (every 4th byte starting at 3)
-            for i in range(3, len(samples), 4):
+            for i in range(3, len(samples), 4):  # Alpha bytes at indices 3, 7, 11, ...
                 samples[i] = int(samples[i] * scribble_opacity)
-            rgba_pix = fitz.Pixmap(fitz.csRGB, pix.width, pix.height, bytes(samples), True)
+        
+        # Create new pixmap with modified samples
+        rgba_pix = fitz.Pixmap(pix.colorspace, pix.width, pix.height, bytes(samples), True)
         
         # Convert to image bytes
         img_bytes = rgba_pix.tobytes("png")
