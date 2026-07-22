@@ -413,7 +413,7 @@ def overlay_scribbles_simple(
             scribble_page = None  # No scribble for this page
         
         # Copy background page to output
-        output_doc.insert_pdf(bg_doc, from_page=bg_page_num, to_page=bg_page_num+1)
+        output_doc.insert_pdf(bg_doc, from_page=bg_page_num, to_page=bg_page_num)
         output_page = output_doc[-1]
         
         # Only overlay if we have a scribble page
@@ -600,7 +600,7 @@ def overlay_scribbles_with_color(
             scribble_page = None  # No scribble for this page
         
         # Copy background page to output
-        output_doc.insert_pdf(bg_doc, from_page=bg_page_num, to_page=bg_page_num+1)
+        output_doc.insert_pdf(bg_doc, from_page=bg_page_num, to_page=bg_page_num)
         output_page = output_doc[-1]
         
         # Only overlay if we have a scribble page
@@ -632,12 +632,12 @@ def overlay_scribbles_with_color(
                         pixels[x, y] = (target_r, target_g, target_b, a)
             
             # Apply opacity to alpha channel
-            if opacity < 1.0:
+            if scribble_opacity < 1.0:
                 pixels = pil_img.load()
                 for y in range(height):
                     for x in range(width):
                         r, g, b, a = pixels[x, y]
-                        a = int(a * opacity)
+                        a = int(a * scribble_opacity)
                         pixels[x, y] = (r, g, b, a)
             
             # Convert to PNG bytes using PIL (proper alpha preservation)
