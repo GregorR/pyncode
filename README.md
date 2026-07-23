@@ -33,6 +33,11 @@ first, download it, delete it from the smartpen's system, then do form B, or
 use different templates. There are about a dozen templates available, so it's
 usually easy enough to keep things separated.
 
+The extracted templates I found are in the [ncode
+branch](https://github.com/GregorR/pyncode/tree/ncode) of this repository. If
+you find any others, post an
+[issue](https://github.com/GregorR/pyncode/issues)!
+
 ## Features
 
 1. **Ncode Overlay**: Overlay Ncode pattern PNGs on PDFs
