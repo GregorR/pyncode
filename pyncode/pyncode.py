@@ -33,13 +33,13 @@ def _process_single_page(args):
     This function is designed to be picklable for multiprocessing.
     
     Args:
-        args: Tuple of (input_pdf_path, page_num, ncode_png_path, dpi)
+        args: Tuple of (input_pdf_path, page_num, ncode_png_path, dpi, ncode_dpi)
     
     Returns:
         Tuple of (page_num, img_data, page_width_pt, page_height_pt)
         Note: page_num is returned for debugging/logging purposes
     """
-    input_pdf_path, page_num, ncode_png_path, dpi = args
+    input_pdf_path, page_num, ncode_png_path, dpi, ncode_dpi = args
     
     # Load source page
     src_doc = fitz.open(input_pdf_path)
@@ -70,7 +70,24 @@ def _process_single_page(args):
         ncode_img = ncode_img.convert('L')
         ncode_img = ncode_img.point(lambda x: 0 if x < 128 else 255, mode='1')
     
-    ncode_width, ncode_height = ncode_img.size
+    ncode_width_px, ncode_height_px = ncode_img.size
+    
+    # Calculate ncode dimensions at its native DPI (600 standard)
+    # and compare to page dimensions at render DPI
+    # Ncode should NOT be scaled - place at native size, centered
+    ncode_width_pt = (ncode_width_px / ncode_dpi) * 72  # Convert to points
+    ncode_height_pt = (ncode_height_px / ncode_dpi) * 72
+    
+    # Calculate render DPI in points per inch (72 points = 1 inch)
+    render_ppi = dpi
+    page_width_px = int(page_width_pt * dpi / 72)
+    page_height_px = int(page_height_pt * dpi / 72)
+    
+    # Calculate offset for centering ncode on page (in pixels at render DPI)
+    # If ncode is larger than page, center it and it will extend beyond (will be cropped later)
+    # If ncode is smaller, center it with margins
+    offset_x_px = (page_width_px - ncode_width_px) // 2
+    offset_y_px = (page_height_px - ncode_height_px) // 2
     
     # Convert RGB pixmap to CMYK by creating new Pixmap with CMYK colorspace
     pix_cmyk = fitz.Pixmap(fitz.csCMYK, pix_rgb)
@@ -81,14 +98,13 @@ def _process_single_page(args):
     
     for y in range(height):
         for x in range(width):
-            # Check if this pixel is an Ncode dot
-            # Scale coordinates to match Ncode image size
-            nx = int(x * ncode_width / width) if width > 0 else 0
-            ny = int(y * ncode_height / height) if height > 0 else 0
+            # Map pixel coordinate to ncode coordinate, accounting for centering offset
+            nx = x - offset_x_px
+            ny = y - offset_y_px
             
-            # Check Ncode image (0 = dot, 255 = background)
+            # Check if this pixel falls within the ncode pattern area
             is_dot = False
-            if nx < ncode_width and ny < ncode_height:
+            if 0 <= nx < ncode_width_px and 0 <= ny < ncode_height_px:
                 ncode_pixel = ncode_img.getpixel((nx, ny))
                 is_dot = (ncode_pixel == 0)
             
@@ -220,7 +236,7 @@ def create_ncoded_pdf(
     
     # Prepare arguments for parallel processing
     page_args = [
-        (input_pdf, page_num, ncode_pngs_list[page_num], dpi)
+        (input_pdf, page_num, ncode_pngs_list[page_num], dpi, ncode_dpi)
         for page_num in range(page_count)
     ]
     
@@ -270,120 +286,6 @@ def create_ncoded_pdf(
     ctx.close()
     
     return page_count
-
-
-def overlay_scribbles_simple(
-    background_pdf: str,
-    scribble_pdf: str,
-    output_pdf: str,
-    scribble_color: Tuple[float, float, float] = (1.0, 0.0, 0.0),
-    scribble_opacity: float = 1.0,
-    page_map: Optional[str] = None,
-    all_pages: bool = False
-) -> int:
-    """
-    Simple scribble overlay using image insertion.
-    
-    This is a more reliable approach that works well for smartpen scribbles,
-    which are typically already rasterized.
-    
-    Args:
-        background_pdf: Path to the background PDF
-        scribble_pdf: Path to the scribble PDF
-        output_pdf: Path to the output PDF
-        scribble_color: Target RGB color (0.0-1.0 range)
-        scribble_opacity: Opacity (0.0-1.0)
-        page_map: Optional string specifying which original pages to overlay.
-                 Format: "1,3-5,7" - same as overlay_scribbles_with_color
-        
-    Returns:
-        Number of pages processed
-    """
-    bg_doc = fitz.open(background_pdf)
-    scribble_doc = fitz.open(scribble_pdf)
-    
-    bg_page_count = len(bg_doc)
-    scribble_page_count = len(scribble_doc)
-    
-    # Determine page mapping and what to export
-    if page_map is not None:
-        # Use explicit page mapping
-        target_pages = parse_page_list(page_map, bg_page_count)
-        if len(target_pages) != scribble_page_count:
-            raise ValueError(
-                f"Page map specifies {len(target_pages)} pages but scribble PDF has {scribble_page_count} pages"
-            )
-        export_pages = target_pages
-    elif all_pages:
-        # Export all pages from background PDF
-        export_pages = list(range(bg_page_count))
-        if scribble_page_count > bg_page_count:
-            raise ValueError(
-                f"Scribble PDF has {scribble_page_count} pages but background has {bg_page_count} pages"
-            )
-    else:
-        # Default: only export pages that have scribbles (trimmed output)
-        export_pages = list(range(scribble_page_count))
-        if scribble_page_count > bg_page_count:
-            raise ValueError(
-                f"Scribble PDF has {scribble_page_count} pages but background has {bg_page_count} pages"
-            )
-    
-    if len(export_pages) == 0:
-        raise ValueError("No pages to process")
-    
-    # Create output document
-    output_doc = fitz.open()
-    
-    for scribble_idx, bg_page_num in enumerate(export_pages):
-        bg_page = bg_doc[bg_page_num]
-        
-        # Get the corresponding scribble page (if it exists)
-        if scribble_idx < scribble_page_count:
-            scribble_page = scribble_doc[scribble_idx]
-        else:
-            scribble_page = None  # No scribble for this page
-        
-        # Copy background page to output
-        output_doc.insert_pdf(bg_doc, from_page=bg_page_num, to_page=bg_page_num)
-        output_page = output_doc[-1]
-        
-        # Only overlay if we have a scribble page
-        if scribble_page is not None:
-            # Render scribble page to pixmap (preserves alpha channel)
-            zoom = 2.0
-            pix = scribble_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
-            
-            # Apply opacity to alpha channel
-            if scribble_opacity < 1.0:
-                samples = bytearray(pix.samples)
-                # For RGBA pixmap, alpha is at indices 3, 7, 11, ...
-                if pix.n == 4:  # RGBA
-                    for i in range(3, len(samples), 4):
-                        samples[i] = int(samples[i] * scribble_opacity)
-                pix = fitz.Pixmap(pix.colorspace, pix.width, pix.height, bytes(samples), True)
-            
-            # Convert to bytes
-            img_bytes = pix.tobytes("png")
-            
-            # Create image insertion rectangle
-            scribble_rect = scribble_page.rect
-            rect = fitz.Rect(0, 0, scribble_rect.width, scribble_rect.height)
-            
-            # Insert image as overlay (opacity handled in pixmap)
-            output_page.insert_image(
-                rect,
-                stream=img_bytes,
-                overlay=True
-            )
-    
-    # Save output document
-    output_doc.save(output_pdf, garbage=4, deflate=True, clean=True)
-    output_doc.close()
-    bg_doc.close()
-    scribble_doc.close()
-    
-    return len(export_pages)
 
 
 def parse_page_list(page_list_str: str, max_pages: int) -> List[int]:
@@ -448,27 +350,28 @@ def parse_page_list(page_list_str: str, max_pages: int) -> List[int]:
     return [p - 1 for p in pages]
 
 
-def overlay_scribbles_with_color(
+def overlay_scribbles(
     background_pdf: str,
     scribble_pdf: str,
     output_pdf: str,
-    scribble_color: Tuple[float, float, float] = (1.0, 0.0, 0.0),
+    scribble_color: Optional[Tuple[float, float, float]] = None,
     scribble_opacity: float = 1.0,
     page_map: Optional[str] = None,
     all_pages: bool = False
 ) -> int:
     """
-    Overlay scribbles with color transformation.
+    Overlay scribbles on a background PDF.
     
-    This function converts the scribbles to the specified color during rendering.
-    It works by rendering the scribble page, applying a color matrix, and then
-    overlaying the result on the background PDF.
+    This function handles both simple overlay (preserving original colors) and
+    color-transformed overlay. The background PDF structure is preserved - text
+    remains selectable!
     
     Args:
         background_pdf: Path to the background PDF
         scribble_pdf: Path to the scribble PDF
         output_pdf: Path to the output PDF
-        scribble_color: Target RGB color (0.0-1.0 range, default: red)
+        scribble_color: Target RGB color (0.0-1.0 range). If None, preserves original colors.
+                       If specified, all scribble strokes are converted to this color.
         scribble_opacity: Opacity (0.0-1.0, default: 1.0)
         page_map: Optional string specifying which original pages to overlay.
                  Format: "1,3-5,7,11,48-" where numbers are 1-indexed original page numbers.
@@ -479,7 +382,9 @@ def overlay_scribbles_with_color(
                  - Scribble page 3 -> Original page 4
                  - Scribble page 4 -> Original page 5
                  - Scribble page 5 -> Original page 7
-        
+        all_pages: If True, export all pages from background PDF.
+                  If False (default), only export pages that have scribbles.
+    
     Returns:
         Number of pages processed
     """
@@ -531,7 +436,7 @@ def overlay_scribbles_with_color(
         else:
             scribble_page = None  # No scribble for this page
         
-        # Copy background page to output
+        # Copy background page to output (preserves metadata, text selectability, etc.)
         output_doc.insert_pdf(bg_doc, from_page=bg_page_num, to_page=bg_page_num)
         output_page = output_doc[-1]
         
@@ -548,20 +453,21 @@ def overlay_scribbles_with_color(
             if pil_img.mode != 'RGBA':
                 pil_img = pil_img.convert('RGBA')
             
-            # Replace RGB values with target color while preserving alpha
-            target_r = int(scribble_color[0] * 255)
-            target_g = int(scribble_color[1] * 255)
-            target_b = int(scribble_color[2] * 255)
-            
-            # Modify pixels using PIL (proper alpha handling)
-            pixels = pil_img.load()
-            width, height = pil_img.size
-            
-            for y in range(height):
-                for x in range(width):
-                    r, g, b, a = pixels[x, y]
-                    if a > 0:  # Only modify non-transparent pixels
-                        pixels[x, y] = (target_r, target_g, target_b, a)
+            # If a target color is specified, replace RGB values while preserving alpha
+            if scribble_color is not None:
+                target_r = int(scribble_color[0] * 255)
+                target_g = int(scribble_color[1] * 255)
+                target_b = int(scribble_color[2] * 255)
+                
+                # Modify pixels using PIL (proper alpha handling)
+                pixels = pil_img.load()
+                width, height = pil_img.size
+                
+                for y in range(height):
+                    for x in range(width):
+                        r, g, b, a = pixels[x, y]
+                        if a > 0:  # Only modify non-transparent pixels
+                            pixels[x, y] = (target_r, target_g, target_b, a)
             
             # Apply opacity to alpha channel
             if scribble_opacity < 1.0:
@@ -752,7 +658,7 @@ def scribble(
         raise click.Abort()
     
     try:
-        page_count = overlay_scribbles_with_color(
+        page_count = overlay_scribbles(
             background_pdf,
             scribble_pdf,
             output_pdf,
@@ -799,16 +705,19 @@ def scribble_simple(
     Same page mapping syntax as the scribble command: --pages "1,3-5,7"
     
     By default, only exports pages with scribbles. Use --all-pages to export all pages.
+    
+    Note: This is now an alias for the scribble command with --color none.
     """
     if opacity < 0.0 or opacity > 1.0:
         click.echo("Error: Opacity must be between 0.0 and 1.0", err=True)
         raise click.Abort()
     
     try:
-        page_count = overlay_scribbles_simple(
+        page_count = overlay_scribbles(
             background_pdf,
             scribble_pdf,
             output_pdf,
+            scribble_color=None,  # No color transformation
             scribble_opacity=opacity,
             page_map=pages,
             all_pages=all_pages
