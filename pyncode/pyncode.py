@@ -451,8 +451,7 @@ def overlay_scribbles(
             offset_x = (bg_rect.width - scribble_rect.width) / 2
             offset_y = (bg_rect.height - scribble_rect.height) / 2
             
-            # Render scribble page with alpha channel at 1:1 scale (native size)
-            pix = scribble_page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0), alpha=True)
+            pix = scribble_page.get_pixmap(dpi=600, alpha=True)
             
             # Convert to PIL Image for proper alpha handling
             pil_img = pix.pil_image()
