@@ -442,9 +442,17 @@ def overlay_scribbles(
         
         # Only overlay if we have a scribble page
         if scribble_page is not None:
-            # Render scribble page with alpha channel
-            zoom = 2.0
-            pix = scribble_page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
+            # Get background and scribble page dimensions in points
+            bg_rect = bg_page.rect
+            scribble_rect = scribble_page.rect
+            
+            # Calculate centering offset (in points)
+            # We want the scribble centered on the background page
+            offset_x = (bg_rect.width - scribble_rect.width) / 2
+            offset_y = (bg_rect.height - scribble_rect.height) / 2
+            
+            # Render scribble page with alpha channel at 1:1 scale (native size)
+            pix = scribble_page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0), alpha=True)
             
             # Convert to PIL Image for proper alpha handling
             pil_img = pix.pil_image()
@@ -483,9 +491,8 @@ def overlay_scribbles(
             pil_img.save(img_buffer, format='PNG')
             img_bytes = img_buffer.getvalue()
             
-            # Insert on output page
-            scribble_rect = scribble_page.rect
-            rect = fitz.Rect(0, 0, scribble_rect.width, scribble_rect.height)
+            # Insert on output page at the calculated offset (centered, native size)
+            rect = fitz.Rect(offset_x, offset_y, offset_x + scribble_rect.width, offset_y + scribble_rect.height)
             
             output_page.insert_image(
                 rect,
